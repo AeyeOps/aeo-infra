@@ -16,10 +16,14 @@ This guide covers setting up the mesh network on native Linux (Ubuntu, Debian, F
 git clone <repo-url> && cd aeo-infra/mesh
 uv sync
 
-# 2. Run setup wizard
+# 2. Run setup wizard (saves server URL for later)
 uv run mesh init
 
 # 3. Join the mesh (get KEY from server admin)
+# If you ran mesh init, the server URL is already saved:
+uv run mesh client setup --key <KEY>
+
+# Or specify server explicitly:
 uv run mesh client setup --server http://server:8080 --key <KEY>
 
 # 4. Verify connection
@@ -49,6 +53,14 @@ uv run mesh server setup --advertise
 
 ## Client Setup
 
+### Using Saved Server URL (after mesh init)
+
+If you ran `mesh init` and entered the server URL, it's saved automatically:
+
+```bash
+uv run mesh client setup --key <KEY>
+```
+
 ### With Auto-Discovery
 
 If the server is on the same network and advertising via mDNS:
@@ -57,7 +69,7 @@ If the server is on the same network and advertising via mDNS:
 uv run mesh client setup --discover --key <KEY>
 ```
 
-### With Manual Server URL
+### With Explicit Server URL
 
 ```bash
 uv run mesh client setup --server http://server.local:8080 --key <KEY>
