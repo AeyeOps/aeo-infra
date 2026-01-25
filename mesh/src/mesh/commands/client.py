@@ -74,10 +74,19 @@ def setup(
     if discover and server:
         error("Cannot use both --discover and --server")
         raise typer.Exit(1)
+
+    # Fall back to saved server URL if neither --server nor --discover provided
+    if not discover and not server:
+        saved_server = get_headscale_server()
+        if saved_server:
+            server = saved_server
+            info(f"Using saved server: {server}")
+
     if not discover and not server:
         error("Must specify --server URL or use --discover")
         info("Example: mesh client setup --server http://myserver:8080 --key <KEY>")
         info("Or: mesh client setup --discover --key <KEY>")
+        info("Or run 'mesh init' first to configure server URL")
         raise typer.Exit(1)
 
     # Auto-discover server if requested

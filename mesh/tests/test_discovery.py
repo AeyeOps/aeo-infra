@@ -147,10 +147,16 @@ class TestDiscoveryIntegration:
         assert result.exit_code == 1
         assert "Cannot use both" in result.output
 
-    def test_client_setup_requires_server_or_discover(self):
-        """Verify client setup requires --server or --discover."""
+    @patch("mesh.commands.client.get_headscale_server")
+    def test_client_setup_requires_server_or_discover_when_no_saved_url(
+        self, mock_get_server
+    ):
+        """Verify client setup requires --server or --discover when no saved URL."""
         from mesh.cli import app
         from typer.testing import CliRunner
+
+        # No saved server URL
+        mock_get_server.return_value = None
 
         runner = CliRunner()
         result = runner.invoke(app, ["client", "setup", "--key", "KEY"])

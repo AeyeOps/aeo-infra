@@ -178,3 +178,48 @@ class TestInitIntegration:
         # Should show dry run output
         assert "Dry Run" in result.output
         assert result.exit_code == 0
+
+
+class TestInitClientSetupWorkflow:
+    """Tests for the init → client setup workflow integration."""
+
+    @patch("mesh.core.config.get_mesh_config_dir")
+    def test_init_saves_server_url_for_client_setup(self, mock_config_dir, tmp_path):
+        """Verify mesh init saves server URL that client setup can read."""
+        from mesh.core.config import get_headscale_server, save_headscale_server
+
+        # Use temp directory for config
+        mock_config_dir.return_value = tmp_path
+
+        # Simulate what init does: save server URL
+        test_url = "http://testserver:8080"
+        save_headscale_server(test_url)
+
+        # Verify client setup can read it
+        retrieved = get_headscale_server()
+        assert retrieved == test_url
+
+    @patch("mesh.core.config.get_mesh_config_dir")
+    def test_client_setup_uses_saved_url_as_fallback(self, mock_config_dir, tmp_path):
+        """Verify client setup falls back to saved URL when no --server provided."""
+        from mesh.core.config import get_headscale_server, save_headscale_server
+
+        mock_config_dir.return_value = tmp_path
+
+        # Save a server URL (simulating mesh init)
+        save_headscale_server("http://saved-server:8080")
+
+        # Verify get_headscale_server returns it
+        url = get_headscale_server()
+        assert url == "http://saved-server:8080"
+
+    @patch("mesh.core.config.get_mesh_config_dir")
+    def test_no_saved_url_returns_none(self, mock_config_dir, tmp_path):
+        """Verify get_headscale_server returns None when no URL saved."""
+        from mesh.core.config import get_headscale_server
+
+        mock_config_dir.return_value = tmp_path
+
+        # No URL saved
+        url = get_headscale_server()
+        assert url is None

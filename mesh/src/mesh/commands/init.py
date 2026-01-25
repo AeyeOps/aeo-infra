@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 from rich.prompt import Confirm, Prompt
 
+from mesh.core.config import save_headscale_server
 from mesh.core.environment import OSType, detect_os_type
 from mesh.utils.output import info, ok, section, warn
 
@@ -122,13 +123,12 @@ def prompt_client_config(hostname: str, os_type: OSType) -> dict[str, str]:
     """Gather client configuration via prompts."""
     config: dict[str, str] = {}
 
-    # Server URL
+    # Server URL - save to ~/.config/mesh/headscale-server for use by client commands
     server_url = Prompt.ask(
         "Headscale server URL",
         default="http://server.local:8080",
     )
-    # Save for later use with 'mesh client join'
-    config["MESH_SERVER_URL"] = server_url
+    save_headscale_server(server_url)
 
     # Client hostname mapping based on OS type
     if os_type == OSType.WSL2:
