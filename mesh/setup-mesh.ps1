@@ -37,7 +37,7 @@
     Configure everything (default if no parameters)
 
 .PARAMETER HeadscaleServer
-    URL of the Headscale server (e.g., http://sfspark1.local:8080)
+    URL of the Headscale server (e.g., http://myserver.local:8080)
 
 .PARAMETER AuthKey
     Pre-auth key for Headscale authentication
@@ -52,7 +52,7 @@ param(
     [switch]$WslAutoStart,
     [switch]$Firewall,
     [switch]$All,
-    [string]$HeadscaleServer = "http://sfspark1.local:8080",
+    [string]$HeadscaleServer,
     [string]$AuthKey,
     [string]$LogFile
 )
@@ -193,7 +193,7 @@ function Connect-Headscale {
     if (-not $AuthKey) {
         Write-Warn "No auth key provided - manual authentication required"
         Write-Host ""
-        Write-Host "  To get an auth key, run on sfspark1:"
+        Write-Host "  To get an auth key, run on your Headscale server:"
         Write-Host "    sudo mesh server keygen"
         Write-Host ""
         Write-Host "  Then run:"
@@ -557,7 +557,7 @@ Write-Step "Setup Complete"
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 if (-not $AuthKey) {
-    Write-Host "  1. Get auth key from sfspark1: sudo ./setup-headscale-server.sh --keygen"
+    Write-Host "  1. Get auth key from Headscale server: mesh server keygen"
     Write-Host "  2. Join mesh: tailscale up --login-server=$HeadscaleServer --authkey=KEY"
 } else {
     Write-Host "  1. Verify mesh connection: tailscale status"
