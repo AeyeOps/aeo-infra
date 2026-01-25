@@ -6,6 +6,8 @@ This file provides guidance to Claude Code when working with aeo-infra.
 
 ```
 aeo-infra/
+├── .env.example   # Configuration template
+├── .env           # Local config (gitignored)
 ├── mesh/          # Python CLI for mesh networking (self-contained project)
 │   ├── src/mesh/  # Python package
 │   ├── pyproject.toml
@@ -16,23 +18,33 @@ aeo-infra/
     └── README.md  # VM-specific docs
 ```
 
+## Configuration
+
+Environment variables (set in `.env` or shell):
+- `MESH_DEFAULT_USER` - Default SSH username
+- `MESH_SERVER_HOST` - Headscale server hostname
+- `MESH_SHARED_FOLDER_LINUX` - Linux shared folder path
+- `MESH_SHARED_FOLDER_WINDOWS` - Windows shared folder path
+- `VM_STORAGE_DIR` - VM disk storage directory
+- `VM_SUBNET` - VM bridge subnet prefix
+
 ## Mesh Networking (mesh/)
 
 ### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  sfspark1 (GB10) - Headscale Coordination Server            │
+│  Server - Headscale Coordination Server                     │
 │  ├─ headscale serve (port 8080)                            │
 │  ├─ Tailscale client (connects to localhost:8080)          │
 │  └─ Syncthing instance (port 8384/22000)                   │
 └─────────────────────────────────────────────────────────────┘
               ↓ WireGuard mesh (peer-to-peer, encrypted)
 ┌─────────────────────────────────────────────────────────────┐
-│  office-one (Windows + WSL2) - Tailscale Clients            │
-│  ├─ WSL2 Tailscale (connects to sfspark1:8080)             │
+│  Clients - Tailscale Clients                                │
+│  ├─ WSL2 Tailscale (connects to server:8080)               │
 │  │   └─ Syncthing (port 8385/22001)                        │
-│  └─ Windows Tailscale (connects to sfspark1:8080)          │
+│  └─ Windows Tailscale (connects to server:8080)            │
 │      └─ Syncthing (port 8386/22002)                        │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -46,13 +58,13 @@ cd mesh
 uv sync
 uv run mesh --help
 
-# Server (sfspark1 only)
+# Server (coordination server only)
 uv run mesh server setup
 uv run mesh server keygen
 uv run mesh server status
 
 # Client (all machines)
-uv run mesh client setup --server http://sfspark1.local:8080 --key <KEY>
+uv run mesh client setup --server http://<server>:8080 --key <KEY>
 uv run mesh client join --key <KEY>
 
 # Status
@@ -62,16 +74,15 @@ uv run mesh status --verbose
 
 ### Network Configuration
 
-| Machine | SSH Port | Syncthing GUI | Syncthing Sync | Headscale |
-|---------|----------|---------------|----------------|-----------|
-| sfspark1 | 22 | 8384 | 22000 | 8080 (server) |
-| office-one (WSL2) | 2222 | 8385 | 22001 | - |
+| Role | SSH Port | Syncthing GUI | Syncthing Sync | Headscale |
+|------|----------|---------------|----------------|-----------|
+| Server | 22 | 8384 | 22000 | 8080 |
+| WSL2 | 2222 | 8385 | 22001 | - |
 | Windows | 22 | 8386 | 22002 | - |
 
 ### Shared Folder Paths
-- sfspark1: `/opt/shared`
-- WSL2: `/opt/shared`
-- Windows: `C:\shared`
+- Linux: `$MESH_SHARED_FOLDER_LINUX` (default: `/opt/shared`)
+- Windows: `$MESH_SHARED_FOLDER_WINDOWS` (default: `C:\shared`)
 
 ### Troubleshooting
 
@@ -82,7 +93,7 @@ sudo systemctl start headscale
 ```
 
 **Tailscale client not connecting:**
-1. Verify Headscale is running: `curl http://sfspark1.local:8080/health`
+1. Verify Headscale is running: `curl http://<server>:8080/health`
 2. Get new pre-auth key: `uv run mesh server keygen`
 3. Re-join: `uv run mesh client join --key NEW_KEY`
 
@@ -108,7 +119,6 @@ cd vms
 # Legacy individual scripts (still available)
 sudo ./setup-ubuntu-vm.sh           # One-time setup
 sudo ./start-ubuntu-vm.sh install   # First boot with ISO
-sudo ./start-windows-vm.sh          # Start Windows VM
 ```
 
 ### VM Network
@@ -117,28 +127,26 @@ VMs use a bridge network with NAT to the host's physical interface:
 
 | VM | IP Address | VNC Port | QEMU Monitor |
 |----|------------|----------|--------------|
-| Windows | 192.168.50.11 | 5900 | 7100 |
-| Ubuntu | 192.168.50.10 | 5901 | 7101 |
+| First | $VM_SUBNET.10 | 5900 | 7100 |
+| Second | $VM_SUBNET.11 | 5901 | 7101 |
 
-Gateway: `192.168.50.1` (host bridge)
+Gateway: `$VM_SUBNET.1` (host bridge)
 
-### /storage/ Files
+### Storage Files
 
 | File | Purpose |
 |------|---------|
-| `windows.rom` | UEFI firmware (shared, read-only) |
-| `windows.vars` | Windows UEFI variables |
-| `data.img` | Windows disk |
-| `ubuntu.img` | Ubuntu disk (64GB) |
-| `ubuntu.vars` | Ubuntu UEFI variables |
+| `*.rom` | UEFI firmware (shared, read-only) |
+| `*.vars` | UEFI variables per VM |
+| `*.img` | VM disk images |
 | `*.iso` | Installation media |
 
 ### QEMU Monitor
 
 Connect via telnet for VM control:
 ```bash
-telnet localhost 7100  # Windows
-telnet localhost 7101  # Ubuntu
+telnet localhost 7100  # First VM
+telnet localhost 7101  # Second VM
 ```
 
 Commands: `info status`, `system_powerdown`, `quit`
@@ -148,4 +156,4 @@ Commands: `info status`, `system_powerdown`, `quit`
 - Validate before declaring root cause/solution
 - Request user validation for hardware/UI tests - no automated tests exist
 - MINIMAL COMPLEXITY: Prefer existing tools over custom code
-- Version source of truth: pyproject.toml (mesh), scripts (vms)
+- Version source of truth: pyproject.toml (mesh), VERSION (repo)

@@ -70,11 +70,16 @@ def get_shared_folder() -> Path:
     """Get the shared folder path based on OS type."""
     os_type = detect_os_type()
     if os_type == OSType.WINDOWS:
-        return Path("C:/shared")
-    return Path("/opt/shared")
+        return Path(os.environ.get("MESH_SHARED_FOLDER_WINDOWS", "C:/shared"))
+    return Path(os.environ.get("MESH_SHARED_FOLDER_LINUX", "/opt/shared"))
 
 
 # --- Host Registry ---
+
+
+def get_default_user() -> str:
+    """Get default SSH user from environment or fallback."""
+    return os.environ.get("MESH_DEFAULT_USER", os.environ.get("USER", "user"))
 
 
 @dataclass
@@ -84,7 +89,11 @@ class Host:
     name: str
     ip: str
     port: int = 22
-    user: str = "steve"
+    user: str | None = None
+
+    def __post_init__(self):
+        if self.user is None:
+            self.user = get_default_user()
 
 
 def _get_hosts_file() -> Path:
@@ -114,7 +123,7 @@ def load_hosts() -> dict[str, Host]:
                 name=name,
                 ip=info.get("ip", ""),
                 port=info.get("port", 22),
-                user=info.get("user", "steve"),
+                user=info.get("user"),  # None triggers default in __post_init__
             )
         return result
     except yaml.YAMLError:
@@ -161,14 +170,14 @@ class InvalidHostnameError(ValueError):
     pass
 
 
-def add_host(name: str, ip: str, port: int = 22, user: str = "steve") -> Host:
+def add_host(name: str, ip: str, port: int = 22, user: str | None = None) -> Host:
     """Add or update a host in the registry. Idempotent.
 
     Args:
         name: Hostname (e.g., "ubu1")
         ip: IP address or hostname (e.g., "192.168.50.10")
         port: SSH port (default 22)
-        user: SSH username (default "steve")
+        user: SSH username (default from MESH_DEFAULT_USER env var)
 
     Returns:
         The created or updated Host.

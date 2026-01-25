@@ -1,6 +1,6 @@
 # aeo-infra
 
-**v0.1.0** · Infrastructure tools for multi-machine development environments.
+**v0.1.1** · Infrastructure tools for multi-machine development environments.
 
 ## Components
 
@@ -8,6 +8,15 @@
 |-----------|---------|------------|
 | [`mesh/`](mesh/) | Mesh networking between machines | Python CLI (Headscale + Syncthing) |
 | [`vms/`](vms/) | QEMU/KVM virtual machine management | Bash scripts |
+
+## Configuration
+
+Copy `.env.example` to `.env` and customize for your environment:
+
+```bash
+cp .env.example .env
+# Edit .env with your hostnames, IPs, and username
+```
 
 ## Quick Start
 
@@ -20,11 +29,11 @@ cd mesh
 uv sync
 uv run mesh --help
 
-# Server setup (sfspark1)
+# Server setup (on your coordination server)
 uv run mesh server setup
 
 # Client setup (other machines)
-uv run mesh client setup --server http://sfspark1.local:8080 --key <KEY>
+uv run mesh client setup --server http://<server>:8080 --key <KEY>
 
 # Status check
 uv run mesh status
@@ -34,7 +43,7 @@ See [`mesh/README.md`](mesh/README.md) for full documentation.
 
 ### Virtual Machine Management
 
-ARM64 KVM virtual machines with shared networking on GB10.
+ARM64 KVM virtual machines with shared networking.
 
 ```bash
 cd vms
@@ -53,13 +62,13 @@ See [`vms/README.md`](vms/README.md) for full documentation.
 ### Mesh Network
 
 ```
-sfspark1 (GB10) - Headscale Coordination Server
+Server - Headscale Coordination Server
 ├── headscale serve (port 8080)
 ├── Tailscale client (localhost:8080)
 └── Syncthing (port 8384/22000)
               ↓ WireGuard mesh (encrypted)
-office-one (Windows + WSL2) - Tailscale Clients
-├── WSL2 Tailscale + Syncthing (8385/22001)
+Clients - Tailscale Clients
+├── Linux/WSL Tailscale + Syncthing (8385/22001)
 └── Windows Tailscale + Syncthing (8386/22002)
 ```
 
@@ -69,7 +78,7 @@ office-one (Windows + WSL2) - Tailscale Clients
 ┌─────────────────────────────────────────────────────┐
 │  Host (192.168.50.1)                                │
 │  ┌─────────────┐                                    │
-│  │   br-vm     │◄─── NAT to enP7s7 ───► Internet   │
+│  │   br-vm     │◄─── NAT to eth0 ───► Internet     │
 │  └──────┬──────┘                                    │
 │    ┌────┴────┐                                      │
 │ ┌──┴──┐   ┌──┴──┐                                  │
@@ -77,8 +86,8 @@ office-one (Windows + WSL2) - Tailscale Clients
 │ └──┬──┘   └──┬──┘                                  │
 └────┼─────────┼──────────────────────────────────────┘
 ┌────┴────┐ ┌──┴─────┐
-│ Windows │ │ Ubuntu │
-│ .50.11  │ │ .50.10 │
+│  VM 1   │ │  VM 2  │
+│ .50.10  │ │ .50.11 │
 └─────────┘ └────────┘
 ```
 
@@ -86,9 +95,9 @@ office-one (Windows + WSL2) - Tailscale Clients
 
 ### Mesh Network Ports
 
-| Machine | SSH | Syncthing GUI | Syncthing Sync | Headscale |
-|---------|-----|---------------|----------------|-----------|
-| sfspark1 | 22 | 8384 | 22000 | 8080 (server) |
+| Role | SSH | Syncthing GUI | Syncthing Sync | Headscale |
+|------|-----|---------------|----------------|-----------|
+| Server | 22 | 8384 | 22000 | 8080 |
 | WSL2 | 2222 | 8385 | 22001 | - |
 | Windows | 22 | 8386 | 22002 | - |
 
@@ -96,8 +105,8 @@ office-one (Windows + WSL2) - Tailscale Clients
 
 | VM | VNC Display | VNC Port | WebSocket | QEMU Monitor |
 |----|-------------|----------|-----------|--------------|
-| Windows | :0 | 5900 | 5700 | 7100 |
-| Ubuntu | :1 | 5901 | 5701 | 7101 |
+| First | :0 | 5900 | 5700 | 7100 |
+| Second | :1 | 5901 | 5701 | 7101 |
 
 ## Requirements
 
@@ -107,7 +116,7 @@ office-one (Windows + WSL2) - Tailscale Clients
 
 ### VM Scripts
 - QEMU/KVM
-- ARM64 host (GB10)
+- ARM64 or x86_64 host
 - UEFI firmware
 
 ## License

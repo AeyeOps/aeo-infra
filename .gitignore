@@ -33,5 +33,10 @@ Thumbs.db
 # Logs
 *.log
 
+# Environment (keep .env.example, exclude actual .env)
+.env
+.env.local
+.env.*.local
+
 # Lock files (keep uv.lock, exclude others)
 !uv.lock

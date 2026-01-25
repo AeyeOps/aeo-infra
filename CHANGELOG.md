@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2025-01-25
+
+### Changed
+- Externalized configuration via `.env` file
+- Generalized documentation (removed hardcoded hostnames/IPs)
+- Default SSH user now reads from `MESH_DEFAULT_USER` env var (falls back to `$USER`)
+- Shared folder paths configurable via `MESH_SHARED_FOLDER_LINUX` and `MESH_SHARED_FOLDER_WINDOWS`
+
+### Added
+- `.env.example` template with all configurable values
+- Configuration section in README and CLAUDE.md
+
+### Note
+- Source code environment detection (`mesh/src/mesh/core/environment.py`) still uses hostname matching for role detection. Full externalization planned for future release.
+
 ## [0.1.0] - 2025-01-25
 
 ### Added

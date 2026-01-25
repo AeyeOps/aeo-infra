@@ -6,7 +6,6 @@ Python CLI for managing a self-hosted mesh network using Headscale (Tailscale co
 
 ```bash
 # Development
-cd /opt/shared/share-tools
 uv sync
 uv run mesh --help
 
@@ -15,16 +14,24 @@ make build
 mesh --version
 ```
 
+## Configuration
+
+The CLI reads configuration from environment variables. See `../.env.example` for available options:
+
+- `MESH_DEFAULT_USER` - Default SSH username for host connections
+- `MESH_SHARED_FOLDER_LINUX` - Linux shared folder path (default: `/opt/shared`)
+- `MESH_SHARED_FOLDER_WINDOWS` - Windows shared folder path (default: `C:\shared`)
+
 ## Usage
 
 ```bash
-# Server management (sfspark1 only)
+# Server management (coordination server only)
 mesh server setup              # Install Headscale coordination server
 mesh server keygen             # Generate pre-auth key for clients
 mesh server status             # Show server status
 
 # Client setup (all machines)
-mesh client setup --server http://sfspark1.local:8080 --key <KEY>
+mesh client setup --server http://<server>:8080 --key <KEY>
 mesh client join --key <KEY>   # Re-join with saved server
 
 # Status and diagnostics
@@ -38,16 +45,16 @@ mesh peer                      # Interactive device pairing
 ## Architecture
 
 ```
-sfspark1 (GB10) - Headscale Coordination Server
+Server - Headscale Coordination Server
 ├── headscale serve (port 8080)
 └── Syncthing (port 8384/22000)
 
 Tailscale Mesh VPN
-    sfspark1 <--> office-one (Windows + WSL2)
-    All nodes use --login-server http://sfspark1.local:8080
+    Server <--> Client (Windows + WSL2)
+    All nodes use --login-server http://<server>:8080
 
 Syncthing Cluster (peer-to-peer)
-    sfspark1:/opt/shared <-> WSL2:/opt/shared <-> Windows:C:\shared
+    Server:/opt/shared <-> WSL2:/opt/shared <-> Windows:C:\shared
     Ports: 8384-8386 (GUI), 22000-22002 (sync)
 ```
 
@@ -66,7 +73,7 @@ make distclean   # Also remove mesh.spec
 ## Project Structure
 
 ```
-share-tools/
+mesh/
 ├── pyproject.toml          # Project config, version source
 ├── Makefile                # validate, build, clean
 ├── src/mesh/               # Python package
@@ -89,4 +96,4 @@ share-tools/
 
 ## License
 
-Internal tooling for multi-machine development environment.
+MIT
