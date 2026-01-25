@@ -40,7 +40,7 @@ aeo-infra/
 ### Key Commands
 
 ```bash
-cd /opt/dev/aeo/aeo-infra/mesh
+cd mesh
 
 # Development
 uv sync
@@ -96,20 +96,19 @@ sudo systemctl start headscale
 ### Key Commands
 
 ```bash
-cd /opt/dev/aeo/aeo-infra/vms
+cd vms
 
-# Ubuntu VM
+# Unified CLI (recommended)
+./vm.sh ubu1              # Create/start VM named ubu1
+./vm.sh ubu1 status       # Show state
+./vm.sh ubu1 stop         # Graceful shutdown
+./vm.sh ubu1 reinstall    # Wipe and reinstall OS
+./vm.sh list              # List all VMs
+
+# Legacy individual scripts (still available)
 sudo ./setup-ubuntu-vm.sh           # One-time setup
 sudo ./start-ubuntu-vm.sh install   # First boot with ISO
-sudo ./start-ubuntu-vm.sh           # Normal boot
-sudo ./stop-ubuntu-vm.sh            # Graceful shutdown
-
-# Windows VM
-sudo ./start-windows-vm.sh
-sudo ./stop-windows-vm.sh
-
-# Network setup (run at boot or before VMs)
-sudo ./setup-vm-network.sh
+sudo ./start-windows-vm.sh          # Start Windows VM
 ```
 
 ### VM Network

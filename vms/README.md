@@ -14,11 +14,19 @@ ARM64 KVM virtual machines with shared networking on GB10.
 | `stop-windows-vm.sh` | Graceful Windows shutdown |
 | `vm-network.service` | Systemd service for boot-time network setup |
 
-## Quick Start - Ubuntu VM
+## Quick Start
 
 ```bash
-cd /opt/dev/aeo/aeo-infra/vms
+# Unified CLI (recommended)
+./vm.sh ubu1              # Create/start VM named ubu1
+./vm.sh ubu1 status       # Show state
+./vm.sh ubu1 stop         # Graceful shutdown
+./vm.sh list              # List all VMs
+```
 
+### Manual Setup (legacy scripts)
+
+```bash
 # 1. Setup (creates /storage if needed, downloads ISO, installs UEFI)
 sudo ./setup-ubuntu-vm.sh
 
