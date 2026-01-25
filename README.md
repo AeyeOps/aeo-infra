@@ -1,6 +1,6 @@
 # aeo-infra
 
-Infrastructure tools for multi-machine development environments.
+**v0.1.0** · Infrastructure tools for multi-machine development environments.
 
 ## Components
 
@@ -16,7 +16,7 @@ Infrastructure tools for multi-machine development environments.
 Self-hosted mesh network using Headscale (Tailscale control server) and Syncthing (file sync).
 
 ```bash
-cd /opt/dev/aeo/aeo-infra/mesh
+cd mesh
 uv sync
 uv run mesh --help
 
@@ -37,16 +37,13 @@ See [`mesh/README.md`](mesh/README.md) for full documentation.
 ARM64 KVM virtual machines with shared networking on GB10.
 
 ```bash
-cd /opt/dev/aeo/aeo-infra/vms
+cd vms
 
-# One-time setup
-sudo ./setup-ubuntu-vm.sh
-
-# Start VM
-sudo ./start-ubuntu-vm.sh
-
-# Stop VM
-sudo ./stop-ubuntu-vm.sh
+# Auto-detect and manage VM
+./vm.sh ubu1              # Create/start VM named ubu1
+./vm.sh ubu1 status       # Show state
+./vm.sh ubu1 stop         # Graceful shutdown
+./vm.sh list              # List all VMs
 ```
 
 See [`vms/README.md`](vms/README.md) for full documentation.
