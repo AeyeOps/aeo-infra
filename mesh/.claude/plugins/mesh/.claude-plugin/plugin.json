@@ -1,0 +1,4 @@
+{
+  "name": "mesh",
+  "description": "MeSH - Mesh Environment for Shared Hosts. Patterns for multi-machine provisioning, SSH configuration, and Windows Tailscale integration."
+}

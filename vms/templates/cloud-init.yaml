@@ -1,0 +1,58 @@
+#cloud-config
+# Cloud-init autoinstall template for Ubuntu Server
+# Variables are substituted by create_cloud_init_iso() in lib/storage.sh
+#
+# Placeholders:
+#   ${VM_NAME}     - VM hostname
+#   ${VM_USER}     - Primary username
+#   ${VM_IP}       - Static IP address
+#   ${GATEWAY}     - Gateway IP (usually 192.168.50.1)
+#   ${SSH_KEY}     - SSH public key
+
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+
+  identity:
+    hostname: ${VM_NAME}
+    username: ${VM_USER}
+    # Password hash for 'ubuntu' - change on first login
+    password: '$6$rounds=4096$xyz$JXKZ7kQvJxK9zvPQ8dNxPJqwPqrP4tZR8mzMJGvMmLG9Q5LXZ.oPzIr.jFQmj7mPz3YQE2qQs/KGNyB5YwNjH.'
+
+  ssh:
+    install-server: true
+    authorized-keys:
+      - ${SSH_KEY}
+    allow-pw: true
+
+  network:
+    version: 2
+    ethernets:
+      enp0s1:
+        addresses:
+          - ${VM_IP}/24
+        routes:
+          - to: default
+            via: ${GATEWAY}
+        nameservers:
+          addresses:
+            - 8.8.8.8
+            - 8.8.4.4
+
+  storage:
+    layout:
+      name: direct
+
+  packages:
+    - openssh-server
+    - curl
+    - git
+
+  late-commands:
+    - curtin in-target --target=/target -- systemctl enable ssh
+
+  user-data:
+    disable_root: true
+    ssh_pwauth: true

@@ -1,0 +1,12 @@
+[Unit]
+Description=VM Network Bridge and TAP Setup
+After=network.target
+Before=libvirtd.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dev/aeo/aeo-kvm/ubuntu-vm/setup-vm-network.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
