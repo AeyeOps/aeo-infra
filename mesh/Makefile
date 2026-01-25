@@ -28,6 +28,8 @@ build: validate
 			--hidden-import mesh.commands.windows \
 			--hidden-import mesh.commands.ubuntu \
 			--hidden-import mesh.commands.remote \
+			--hidden-import mesh.commands.init \
+			--hidden-import mesh.commands.host \
 			--hidden-import mesh.core.environment \
 			--hidden-import mesh.core.config \
 			--hidden-import mesh.core.syncthing \
@@ -36,6 +38,7 @@ build: validate
 			--hidden-import mesh.utils.output \
 			--hidden-import mesh.utils.process \
 			--hidden-import mesh.utils.ssh \
+			--hidden-import mesh.discovery \
 			src/mesh/__main__.py; \
 	fi
 	cp dist/mesh /usr/local/bin/mesh

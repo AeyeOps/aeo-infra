@@ -2,6 +2,12 @@
 
 Python CLI for managing a self-hosted mesh network using Headscale (Tailscale control server) and Syncthing (distributed file sync).
 
+## Platform Guides
+
+- [Linux Setup](docs/setup-linux.md) - Ubuntu, Debian, Fedora (x64/ARM64)
+- [Windows Setup](docs/setup-windows.md) - Windows 10/11 (x64/ARM64)
+- [WSL2 Setup](docs/setup-wsl2.md) - Windows Subsystem for Linux 2
+
 ## Installation
 
 ```bash
@@ -25,13 +31,19 @@ The CLI reads configuration from environment variables. See `../.env.example` fo
 ## Usage
 
 ```bash
+# Interactive setup wizard
+mesh init                      # Guided configuration
+mesh init --dry-run            # Preview without writing
+
 # Server management (coordination server only)
 mesh server setup              # Install Headscale coordination server
+mesh server setup --advertise  # Also enable mDNS auto-discovery
 mesh server keygen             # Generate pre-auth key for clients
 mesh server status             # Show server status
 
 # Client setup (all machines)
 mesh client setup --server http://<server>:8080 --key <KEY>
+mesh client setup --discover --key <KEY>   # Auto-discover server via mDNS
 mesh client join --key <KEY>   # Re-join with saved server
 
 # Status and diagnostics

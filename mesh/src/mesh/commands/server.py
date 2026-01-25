@@ -3,7 +3,7 @@
 import typer
 
 from mesh.core import headscale
-from mesh.core.environment import Role, detect_role, is_server
+from mesh.core.environment import detect_role, is_server
 from mesh.utils.output import error, info, ok, section
 from mesh.utils.process import run_sudo
 
@@ -18,13 +18,20 @@ def require_server() -> None:
     """Ensure we're running on the coordination server."""
     if not is_server():
         role = detect_role()
-        error(f"Server commands must be run on the coordination server (current role: {role.value})")
+        error(
+            f"Server commands must be run on the coordination server (current role: {role.value})"
+        )
         info("Configure your server hostname with MESH_SERVER_HOSTNAMES environment variable")
         raise typer.Exit(1)
 
 
 @app.command()
-def setup() -> None:
+def setup(
+    advertise: bool = typer.Option(
+        False, "--advertise", "-a", help="Advertise server via mDNS for auto-discovery"
+    ),
+    port: int = typer.Option(8080, "--port", "-p", help="Server port for mDNS advertisement"),
+) -> None:
     """Install and configure Headscale server."""
     require_server()
 
@@ -62,6 +69,28 @@ def setup() -> None:
         raise typer.Exit(1)
 
     ok("Server setup complete")
+
+    # Start mDNS advertisement if requested
+    if advertise:
+        from mesh.discovery import advertise_server
+
+        section("mDNS Advertisement")
+        try:
+            zc = advertise_server(port=port)
+            ok("Server is now discoverable on local network")
+            info("Clients can use: mesh client setup --discover --key <KEY>")
+            info("Press Ctrl+C to stop advertising")
+            try:
+                import time
+
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                zc.close()
+                info("Stopped advertising")
+        except Exception as e:
+            error(f"Failed to start mDNS advertisement: {e}")
+            info("Server setup succeeded, but auto-discovery is unavailable")
 
 
 @app.command()

@@ -19,7 +19,7 @@ def add(
     name: str = typer.Argument(..., help="Hostname alias (e.g., 'ubu1')"),
     ip: str = typer.Option(..., "--ip", "-i", help="IP address or hostname"),
     port: int = typer.Option(22, "--port", "-p", help="SSH port"),
-    user: str = typer.Option("steve", "--user", "-u", help="SSH username"),
+    user: str = typer.Option(None, "--user", "-u", help="SSH username (defaults to current user)"),
     no_ssh: bool = typer.Option(False, "--no-ssh", help="Don't add SSH config entry"),
 ) -> None:
     """Add a host to the mesh registry.
@@ -30,8 +30,12 @@ def add(
 
     Examples:
         mesh host add ubu1 --ip 192.168.50.10
-        mesh host add ubu1 --ip 192.168.50.10 --port 22 --user steve
+        mesh host add ubu1 --ip 192.168.50.10 --port 22 --user ubuntu
     """
+    import os
+
+    if user is None:
+        user = os.environ.get("USER", "ubuntu")
     section(f"Adding host: {name}")
 
     # Add to registry
@@ -39,7 +43,7 @@ def add(
         host = add_host(name, ip, port, user)
     except InvalidHostnameError as e:
         error(str(e))
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     ok(f"Added to registry: {host.name} ({host.ip}:{host.port})")
 
     # Add SSH config entry

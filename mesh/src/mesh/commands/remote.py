@@ -43,6 +43,7 @@ def get_default_server_url() -> str:
     ip = get_local_ip()
     return f"http://{ip}:{HEADSCALE_PORT}"
 
+
 # SSH options for non-interactive connections
 SSH_OPTS = [
     "-o",
@@ -158,7 +159,7 @@ def check_windows_vpn_lan_access(host: str, port: int, server_ip: str) -> bool:
     # Just check if we can reach the Headscale server directly
     # This is the definitive test - if curl works, we're good
     cmd = (
-        f'powershell -Command "curl.exe -s -o NUL -w \'%{{http_code}}\' '
+        f"powershell -Command \"curl.exe -s -o NUL -w '%{{http_code}}' "
         f'-m 5 http://{server_ip}:8080/health"'
     )
     success, output = ssh_run(host, port, cmd, timeout=10)
@@ -174,8 +175,7 @@ def check_windows_vpn_conflicts(host: str, port: int) -> list[str]:
 
     # Check for NordVPN (uses WireGuard on port 41641)
     cmd = (
-        'powershell -Command "'
-        'Get-Service NordVPN* 2>$null | Select-Object -ExpandProperty Status"'
+        'powershell -Command "Get-Service NordVPN* 2>$null | Select-Object -ExpandProperty Status"'
     )
     success, output = ssh_run(host, port, cmd, timeout=10)
     if success and "Running" in output:
@@ -199,8 +199,7 @@ def check_windows_vpn_conflicts(host: str, port: int) -> list[str]:
     ]
     for name, pattern in vpn_services:
         cmd = (
-            f'powershell -Command "Get-Service {pattern} 2>$null '
-            f'| Where-Object Status -eq Running"'
+            f'powershell -Command "Get-Service {pattern} 2>$null | Where-Object Status -eq Running"'
         )
         success, output = ssh_run(host, port, cmd, timeout=10)
         if success and output.strip():
@@ -325,7 +324,7 @@ def provision_windows(host: str, port: int, server_url: str, auth_key: str) -> b
         "function Log($msg) { $ts = Get-Date -Format 'HH:mm:ss'; Write-Host \"[$ts] $msg\" }",
         "",
         "Write-Host '=== Joining Mesh Network ===' -ForegroundColor Cyan",
-        "Log \"Starting mesh join - Server: $ServerUrl\"",
+        'Log "Starting mesh join - Server: $ServerUrl"',
         "",
         "# Step 1: Stop any running Tailscale processes",
         "Write-Host '[1/5] Stopping Tailscale processes...' -ForegroundColor Yellow",
@@ -339,7 +338,7 @@ def provision_windows(host: str, port: int, server_url: str, auth_key: str) -> b
         "# Step 2: Configure registry for this mesh",
         "Write-Host '[2/5] Configuring mesh settings...' -ForegroundColor Yellow",
         "$regPath = 'HKLM:\\SOFTWARE\\Tailscale IPN'",
-        "Log \"Setting registry: $regPath\"",
+        'Log "Setting registry: $regPath"',
         "if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }",
         "Set-ItemProperty -Path $regPath -Name 'LoginURL' -Value $ServerUrl",
         "Set-ItemProperty -Path $regPath -Name 'UnattendedMode' -Value 'always'",
@@ -351,28 +350,28 @@ def provision_windows(host: str, port: int, server_url: str, auth_key: str) -> b
         "Start-Service Tailscale",
         "Start-Sleep 3",
         "$svcStatus = (Get-Service Tailscale).Status",
-        "Log \"Service status: $svcStatus\"",
+        'Log "Service status: $svcStatus"',
         "Log 'Step 3 complete'",
         "",
         "# Step 4: Connect to mesh",
         "Write-Host '[4/5] Connecting to mesh network...' -ForegroundColor Yellow",
         "Log 'Running tailscale up (timeout 30s)...'",
-        "Log \"Command: $TailscaleExe up --login-server=$ServerUrl "
-        "--authkey=<redacted> --accept-routes --unattended --reset --timeout=30s\"",
+        'Log "Command: $TailscaleExe up --login-server=$ServerUrl '
+        '--authkey=<redacted> --accept-routes --unattended --reset --timeout=30s"',
         "",
         "# Capture output and run with job to detect hangs",
         "$upOutput = & $TailscaleExe up --login-server=$ServerUrl --authkey=$AuthKey "
         "--accept-routes --unattended --reset --timeout=30s 2>&1 | Out-String",
         "$connectResult = $LASTEXITCODE",
-        "Log \"tailscale up exit code: $connectResult\"",
-        "Log \"tailscale up output: $upOutput\"",
+        'Log "tailscale up exit code: $connectResult"',
+        'Log "tailscale up output: $upOutput"',
         "",
         "# Step 5: Verify connection",
         "Write-Host '[5/5] Verifying connection...' -ForegroundColor Yellow",
         "Start-Sleep 2",
         "Log 'Checking tailscale status...'",
         "$status = & $TailscaleExe status 2>&1 | Out-String",
-        "Log \"Status output: $status\"",
+        'Log "Status output: $status"',
         "",
         "Write-Host ''",
         "if ($connectResult -eq 0 -and $status -notmatch 'Logged out') {",
@@ -382,8 +381,8 @@ def provision_windows(host: str, port: int, server_url: str, auth_key: str) -> b
         "    & $TailscaleExe status",
         "} else {",
         "    Write-Host 'FAILED: Could not connect to mesh' -ForegroundColor Red",
-        "    Write-Host \"Status: $status\" -ForegroundColor Red",
-        "    Log \"FAILED - exit code: $connectResult\"",
+        '    Write-Host "Status: $status" -ForegroundColor Red',
+        '    Log "FAILED - exit code: $connectResult"',
         "}",
         "",
         "Stop-Transcript",
@@ -400,8 +399,7 @@ def provision_windows(host: str, port: int, server_url: str, auth_key: str) -> b
     ssh_cmd = ["ssh"] + SSH_OPTS + ["-p", str(port), host, ps_write_cmd]
     # First ensure temp directory exists
     mkdir_cmd = (
-        'powershell -Command "'
-        "New-Item -Path 'C:\\temp' -ItemType Directory -Force | Out-Null\""
+        "powershell -Command \"New-Item -Path 'C:\\temp' -ItemType Directory -Force | Out-Null\""
     )
     ssh_run(host, port, mkdir_cmd)
 
@@ -500,8 +498,8 @@ def provision(
     - Optionally installs Syncthing
 
     Examples:
-        mesh remote provision steve@office-one.local
-        mesh remote provision steve@office-one.local --port 2222  # WSL
+        mesh remote provision user@host.local
+        mesh remote provision user@host.local --port 2222  # WSL
         mesh remote provision ubu1  # Uses host registry if configured
     """
     # Auto-detect server URL if not provided
@@ -687,10 +685,7 @@ def provision_all(
         raise typer.Exit(1)
 
     # Build hosts list from registry
-    hosts = [
-        (f"{h.user}@{h.ip}", h.port, h.name)
-        for h in registry.values()
-    ]
+    hosts = [(f"{h.user}@{h.ip}", h.port, h.name) for h in registry.values()]
     info(f"Found {len(hosts)} host(s) in registry")
 
     results = []

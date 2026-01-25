@@ -21,8 +21,17 @@ def ssh_to_host(host: str, cmd: str, timeout: int = 30, port: int = 22) -> tuple
     """
     try:
         result = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}",
-             "-p", str(port), host, cmd],
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                f"ConnectTimeout={timeout}",
+                "-p",
+                str(port),
+                host,
+                cmd,
+            ],
             capture_output=True,
             text=True,
             timeout=timeout + SSH_TIMEOUT_BUFFER,
@@ -39,20 +48,22 @@ SSH_CONFIG_END = "# End mesh network hosts"
 
 MESH_SSH_CONFIG = """
 # Mesh network hosts - managed by mesh CLI
-Host sfspark1
-    HostName sfspark1.local
-    User steve
-    Port 22
-
-Host office-one-wsl
-    HostName office-one.local
-    User steve
-    Port 2222
-
-Host office-one-windows
-    HostName office-one.local
-    User steve
-    Port 22
+# Example entries (customize for your mesh network):
+#
+# Host mesh-server
+#     HostName server.local
+#     User ubuntu
+#     Port 22
+#
+# Host client-wsl
+#     HostName client.local
+#     User ubuntu
+#     Port 2222
+#
+# Host client-windows
+#     HostName client.local
+#     User ubuntu
+#     Port 22
 # End mesh network hosts
 """
 
@@ -133,7 +144,7 @@ def remove_mesh_config() -> bool:
 #   Host ubu1
 #       HostName 192.168.50.10
 #       Port 22
-#       User steve
+#       User ubuntu
 #   # end mesh-managed: ubu1
 
 DYNAMIC_HOST_START = "# mesh-managed:"
@@ -167,18 +178,23 @@ def host_exists(name: str) -> bool:
     return False
 
 
-def add_ssh_host(name: str, hostname: str, port: int = 22, user: str = "steve") -> bool:
+def add_ssh_host(name: str, hostname: str, port: int = 22, user: str | None = None) -> bool:
     """Add or update a dynamic SSH host entry.
 
     Args:
         name: Host alias (e.g., "ubu1")
         hostname: Actual hostname or IP (e.g., "192.168.50.10")
         port: SSH port
-        user: SSH username
+        user: SSH username (defaults to current user or "ubuntu")
 
     Returns:
         True on success.
     """
+    import os
+
+    if user is None:
+        user = os.environ.get("USER", "ubuntu")
+
     config_path = get_ssh_config_path()
     config_path.parent.mkdir(mode=0o700, exist_ok=True)
 

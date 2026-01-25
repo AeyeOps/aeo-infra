@@ -84,7 +84,7 @@ def ensure_key_authorized(host: str, pubkey: str, comment: str = "") -> bool:
 
 @app.command()
 def sync_keys(
-    host: str = typer.Option("sfspark1", "--host", "-h", help="Remote host to authorize keys on"),
+    host: str = typer.Option(..., "--host", "-h", help="Remote host to authorize keys on"),
     user: str = typer.Option("", "--user", "-u", help="Remote username (default: current user)"),
 ) -> None:
     """Ensure NVIDIA Sync SSH key is authorized on remote host.

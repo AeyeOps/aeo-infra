@@ -3,7 +3,7 @@
 import typer
 
 from mesh import __version__
-from mesh.commands import client, host, peer, remote, server, status, ubuntu, windows, wsl
+from mesh.commands import client, host, init, peer, remote, server, status, ubuntu, windows, wsl
 
 app = typer.Typer(
     name="mesh",
@@ -45,6 +45,7 @@ def main(
 
 
 # Register standalone commands
+app.command(name="init")(init.init)
 app.command(name="status")(status.status)
 app.command(name="peer")(peer.peer)
 

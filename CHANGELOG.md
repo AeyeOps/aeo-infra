@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2025-01-25
+
+### Added
+- `mesh init` - Interactive setup wizard for guided configuration
+  - Detects platform (Linux x64/ARM64, Windows, WSL2)
+  - Role selection (server/client)
+  - Generates `.env` configuration with backup
+  - `--dry-run` flag for preview without writing
+- mDNS auto-discovery for mesh servers
+  - Server: `mesh server setup --advertise` enables discovery
+  - Client: `mesh client setup --discover --key <KEY>` finds server automatically
+- Platform-specific documentation
+  - `docs/setup-linux.md` - Native Linux guide
+  - `docs/setup-windows.md` - Windows guide (with manual install notes)
+  - `docs/setup-wsl2.md` - WSL2 guide
+
+### Changed
+- `mesh client setup` now requires `--server URL` or `--discover` flag (no default)
+- Added `zeroconf>=0.131` dependency for mDNS support
+
+### Removed
+- Hardcoded `DEFAULT_SERVER` constant (was PII)
+
 ## [0.2.0] - 2025-01-25
 
 ### Changed

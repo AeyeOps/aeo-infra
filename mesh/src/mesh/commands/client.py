@@ -15,8 +15,6 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-DEFAULT_SERVER = "http://sfspark1.local:8080"
-
 
 def install_tailscale_linux() -> bool:
     """Install Tailscale on Linux/WSL2."""
@@ -65,10 +63,37 @@ def install_syncthing_ubuntu() -> bool:
 
 @app.command()
 def setup(
-    server: str = typer.Option(DEFAULT_SERVER, "--server", "-s", help="Headscale server URL"),
+    server: str = typer.Option(None, "--server", "-s", help="Headscale server URL"),
     key: str = typer.Option(..., "--key", "-k", help="Pre-authentication key"),
+    discover: bool = typer.Option(
+        False, "--discover", "-d", help="Auto-discover server on local network"
+    ),
 ) -> None:
     """Install Tailscale and Syncthing, join mesh network."""
+    # Validate server/discover options
+    if discover and server:
+        error("Cannot use both --discover and --server")
+        raise typer.Exit(1)
+    if not discover and not server:
+        error("Must specify --server URL or use --discover")
+        info("Example: mesh client setup --server http://myserver:8080 --key <KEY>")
+        info("Or: mesh client setup --discover --key <KEY>")
+        raise typer.Exit(1)
+
+    # Auto-discover server if requested
+    if discover:
+        from mesh.discovery import discover_server
+
+        info("Searching for mesh server on local network...")
+        discovered = discover_server()
+        if not discovered:
+            error("No mesh server found on local network")
+            info("Ensure the server is running with --advertise flag")
+            info("Or specify server URL directly: --server http://server:8080")
+            raise typer.Exit(1)
+        server = discovered
+        ok(f"Found server: {server}")
+
     section("Client Setup")
 
     os_type = detect_os_type()

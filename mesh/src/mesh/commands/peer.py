@@ -75,7 +75,7 @@ def peer() -> None:
         raise typer.Exit(1)
 
     # Get peer name
-    peer_name = Prompt.ask("Peer name (e.g., sfspark1)", default="peer")
+    peer_name = Prompt.ask("Peer name (e.g., mesh-server)", default="peer")
 
     # Add the device
     info(f"Adding device '{peer_name}'...")
