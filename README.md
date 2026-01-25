@@ -1,6 +1,6 @@
 # aeo-infra
 
-**v0.1.1** · Infrastructure tools for multi-machine development environments.
+**v0.2.0** · Infrastructure tools for multi-machine development environments.
 
 ## Components
 

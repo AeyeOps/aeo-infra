@@ -27,7 +27,7 @@ def get_syncthing_port() -> int:
     """Get Syncthing GUI port based on role."""
     role = detect_role()
     ports = {
-        Role.SFSPARK1: 8384,
+        Role.SERVER: 8384,
         Role.WSL2: 8385,
         Role.WINDOWS: 8386,
     }
@@ -38,7 +38,7 @@ def get_syncthing_sync_port() -> int:
     """Get Syncthing sync port based on role."""
     role = detect_role()
     ports = {
-        Role.SFSPARK1: 22000,
+        Role.SERVER: 22000,
         Role.WSL2: 22001,
         Role.WINDOWS: 22002,
     }

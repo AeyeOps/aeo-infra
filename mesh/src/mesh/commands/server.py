@@ -1,9 +1,9 @@
-"""Server management commands (Headscale on sfspark1)."""
+"""Server management commands (Headscale coordination server)."""
 
 import typer
 
 from mesh.core import headscale
-from mesh.core.environment import Role, detect_role
+from mesh.core.environment import Role, detect_role, is_server
 from mesh.utils.output import error, info, ok, section
 from mesh.utils.process import run_sudo
 
@@ -14,18 +14,19 @@ app = typer.Typer(
 )
 
 
-def require_sfspark1() -> None:
-    """Ensure we're running on sfspark1."""
-    role = detect_role()
-    if role != Role.SFSPARK1:
-        error("Server commands must be run on sfspark1")
+def require_server() -> None:
+    """Ensure we're running on the coordination server."""
+    if not is_server():
+        role = detect_role()
+        error(f"Server commands must be run on the coordination server (current role: {role.value})")
+        info("Configure your server hostname with MESH_SERVER_HOSTNAMES environment variable")
         raise typer.Exit(1)
 
 
 @app.command()
 def setup() -> None:
     """Install and configure Headscale server."""
-    require_sfspark1()
+    require_server()
 
     section("Headscale Server Setup")
 
@@ -66,7 +67,7 @@ def setup() -> None:
 @app.command()
 def keygen() -> None:
     """Generate a pre-authentication key for clients."""
-    require_sfspark1()
+    require_server()
 
     section("Generate Pre-Auth Key")
 
@@ -88,7 +89,7 @@ def keygen() -> None:
 @app.command()
 def status() -> None:
     """Show Headscale server status."""
-    require_sfspark1()
+    require_server()
 
     section("Headscale Server Status")
 

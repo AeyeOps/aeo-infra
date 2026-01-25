@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2025-01-25
+
+### Changed
+- **BREAKING**: Renamed `Role.SFSPARK1` to `Role.SERVER` for generic naming
+- Role detection now fully configurable via environment variables
+- Removed all hardcoded hostname detection from source code
+
+### Added
+- `MESH_SERVER_HOSTNAMES` - Configure which hostnames are the coordination server
+- `MESH_WSL2_HOSTNAMES` - Configure WSL2 client hostnames
+- `MESH_WINDOWS_HOSTNAMES` - Configure Windows client hostnames
+- `is_server()` helper function in environment module
+- Helpful error messages when role detection fails
+
+### Fixed
+- Server commands now work on any machine configured as server (not just "sfspark1")
+
 ## [0.1.1] - 2025-01-25
 
 ### Changed
@@ -13,9 +30,6 @@ All notable changes to this project will be documented in this file.
 ### Added
 - `.env.example` template with all configurable values
 - Configuration section in README and CLAUDE.md
-
-### Note
-- Source code environment detection (`mesh/src/mesh/core/environment.py`) still uses hostname matching for role detection. Full externalization planned for future release.
 
 ## [0.1.0] - 2025-01-25
 
