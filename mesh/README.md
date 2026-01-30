@@ -8,6 +8,10 @@ Python CLI for managing a self-hosted mesh network using Headscale (Tailscale co
 - [Windows Setup](docs/setup-windows.md) - Windows 10/11 (x64/ARM64)
 - [WSL2 Setup](docs/setup-wsl2.md) - Windows Subsystem for Linux 2
 
+## Case Study
+
+- [Three-Node Mesh Implementation](docs/case-study/README.md) - Real-world implementation with lessons learned on SSH port conflicts, Windows credential isolation, and AI agent protection
+
 ## Installation
 
 ```bash
