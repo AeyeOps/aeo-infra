@@ -56,6 +56,12 @@ mesh status --verbose          # Detailed diagnostics
 
 # Syncthing peer exchange
 mesh peer                      # Interactive device pairing
+
+# SMB/Samba file sharing
+mesh smb setup-server --share shared --user steve   # Configure Samba on Linux
+mesh smb add-user steve                             # Add/update SMB user password
+mesh smb setup-client --host windows --server sfspark1 --user steve  # Generate Windows drive-mapping script
+mesh smb status                                     # Check Samba services and shares
 ```
 
 ## Architecture

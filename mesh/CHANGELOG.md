@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-02-04
+
+### Added
+- `mesh smb` command group for Samba/SMB file sharing
+  - `mesh smb setup-server` — Idempotent Samba server setup on Linux (install, share config, smbpasswd, UFW, systemd drop-ins)
+  - `mesh smb add-user` — Add/update Samba user passwords
+  - `mesh smb setup-client` — Generate PowerShell drive-mapping script on Windows via SSH
+  - `mesh smb status` — Check Samba services, shares, and port status
+
+### Changed
+- Rewrote `docs/setup-windows.md` — rclone SFTP mounting via Tailscale (replaces Syncthing-based approach)
+- Rewrote `docs/setup-wsl2.md` — NFSv4 mounting via host Tailscale, WSL2 networking constraints documented
+
 ## [0.4.0] - 2026-01-30
 
 ### Added
