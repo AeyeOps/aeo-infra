@@ -1,0 +1,24 @@
+# Environment
+.env
+.venv/
+
+# Build artifacts
+dist/
+build/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# uv
+uv.lock
+
+# Models (keep directory, ignore contents)
+models/*
+!models/.gitkeep
+
+# IDE
+.idea/
+.vscode/
