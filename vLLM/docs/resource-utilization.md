@@ -161,7 +161,7 @@ peak_profile ≈ 64.0 + pool_GiB    # the ~20 s transient during the post-startu
 
 All three constants were validated against `free -m` measurements during Run 001 to within 0.1 GiB. The relationship `peak_steady - peak_health ≈ 3.6 GiB` is the cuda-cache pinning that survives the profile pass; `peak_profile - peak_steady ≈ 3 GiB` is the worst-case batch the profile pass pushes through the model on every container start.
 
-> **POST-RUN-002 CAVEAT (CRITICAL).** Run 002 measured a *new* operating point that none of the three coefficients above describes: a **first-concurrent-batch initialization transient** of roughly +5 to +7 GiB above `peak_steady`, occurring asynchronously during the first ~25 s after the engine sees a request batch larger than any it has serviced before. It is *not* the post-startup profile pass — that happens during container init, before the API server is up. It is *not* tied to active inference — Run 002 saw the spike with `running=0`. And it is not yet pinned to a specific vLLM subsystem. Until characterized, **add 5–7 GiB to `peak_steady` for any (seqs, ctx) cell that has never been exercised at full concurrency on the running engine**, and treat that as a new binding constraint above `peak_profile`.
+> **POST-RUN-002 CAVEAT (SOFTENED by Run 002c).** Run 002 measured an operating point that none of the three coefficients describes: a first-concurrent-batch initialization transient of roughly +5 to +7 GiB above `peak_steady`, with `running=0`. **Run 002c was specifically designed to re-provoke this via a ramped 1→2→3→4 concurrency transition under the same config — and failed to.** Peak during each ramp transition was within 0.04 GiB of the solo-serving floor (see Run 002c section). So the +5–7 GiB tax is **not** a universal property of this config; Run 002's spike was either situational to that specific startup state (pool 9.91 GiB, unknown allocation ordering) or required a codepath the Run 002c engine did not hit. Going forward: treat this as a **bounded excursion risk** (one observation, three non-observations) rather than a binding constraint. The 88 GiB kill switch is still the right safety, but the "add 5–7 GiB" adjustment is no longer mandatory in planning arithmetic.
 
 **Calibrated peak-memory matrix at 80 GiB cap (uses corrected `peak_profile = 64 + pool`).** Cell value = projected GiB. Legend: ✅ ≥3 GiB headroom · ⚠ 1–3 GiB · ❌ over cap. **None of these cells include the first-concurrent-batch tax** — see caveat above.
 
@@ -295,12 +295,95 @@ The plan classified outcomes as A/B/C (per-spike framework) or D (no spike). Run
 - `run_002b_per_request.csv` — 9 rows: 4 boundary markers + 4 request rows + 1 warm tail
 - `run_002b_memtrail.csv` — 463 samples at ~0.5 s cadence over the full ~7 min window
 
-### Planned follow-up runs (queued, **all blocked** by the Run 002 finding)
+### Run 002c — Ramped Multi-Turn High-Fill Characterization (PASS)
 
-- ~~Run 003 candidate: `4 × 64K` at util 0.48~~ — **blocked.** Projected at 76 GiB by the corrected model (4 GiB headroom under the 80 GiB cap). With the +7 GiB first-concurrent-batch tax we now know about, this cell projects to **~83 GiB**, *over* the cap. Cannot promote until the transient is either characterized away or shown to be one-shot per container lifetime *and* we're willing to accept a brief excursion past 80 GiB.
-- Run 003 candidate: `2 × 128K` at util ≈ 0.48 — also blocked, but for a different reason: same +7 GiB tax would put it at ~83 GiB.
-- Run 004 candidate: `1 × 262K` at util ≈ 0.48 — **only ✅ candidate that survives the caveat** (76.3 + 7 = 83 GiB ❌ at concurrency 1? actually no: 1-session never hits "first-concurrent-batch" because there is no batch >1. So 76.3 GiB is the real number — ✅). Worth doing as an *unconcurrent* bound check.
-- A new candidate: **Run 002b — same config, warm engine** — re-run the same A→B→C sequence against the *currently warm* container. If the spike doesn't recur, it confirms first-concurrent-batch is one-shot per container lifetime, and we can pre-warm before any load test.
+| Field | Value |
+|---|---|
+| Date | 2026-04-13 |
+| Container state | Cold start (fresh `docker compose up -d` after Run 002b cleanup) |
+| Config | Identical to Runs 001/002/002b — `max_num_seqs=4`, `max_model_len=49152`, `gpu_memory_utilization=0.46`, image v23 |
+| Pool size | **11.41 GiB** (001: 8.93, 002: 9.91, 002b: 9.72, 002c: 11.41 — drift *widening*, span now 2.48 GiB across 4 cold starts) |
+| Test shape | 4 sessions × 16 turns × 2500 max_tokens, **ramped start** (S1 alone → S2 joins after S1.t1 → S3 after S2.t1 → S4 after S3.t1), then async finish, no post-ramp synchronization |
+| Cap / kill switch | 90 GiB / 88 GiB (same as Run 002b) |
+| Driver | `vLLM/scripts/run_002c_ramped.py` |
+| **Verdict** | **PASS — all six criteria.** 64/64 turns ok, 0 errors, 0 kill trips |
+
+**Headline finding — the Run 002 concurrency spike did not reproduce.** Ramp transition peaks:
+
+| Transition | Peak used (GiB) | kv_max in window |
+|---|---:|---:|
+| 1 → 2 | 70.79 | 1.9 % |
+| 2 → 3 | 70.76 | 2.5 % |
+| 3 → 4 | 70.78 | 4.0 % |
+
+Essentially flat — within 0.04 GiB of each other, and only ~0.4 GiB above the solo-serving floor. Run 002's 80.79 GiB spike at `running=0` was either situational to that cold-start state or required a specific allocation path that this engine instance did not traverse. The "+5–7 GiB first-concurrent-batch tax" previously posited as a universal caveat is **not supported** as a general rule under this config.
+
+**Per-concurrency-level steady-state stats** (from memtrail segmentation by `running` value):
+
+| running | samples | max used (GiB) | mean used (GiB) | max kv |
+|---:|---:|---:|---:|---:|
+| 0 | 29 | 70.15 | 70.12 | 0.0 % |
+| 1 | 134 | 70.72 | 70.33 | 3.7 % |
+| 2 | 122 | 70.79 | 70.43 | 7.2 % |
+| 3 | 228 | 70.85 | 70.40 | 10.3 % |
+| 4 | 1072 | 70.86 | 70.66 | 13.5 % |
+
+**4× concurrency added ~0.33 GiB mean, ~0.14 GiB peak** over solo serving. Concurrency cost under this config is effectively nil.
+
+**Per-session summary:**
+
+| S | Topic | done | TTFT₁ | TTFT₁₆ | wall₁ | wall₁₆ | p95 first-4 | p95 last-4 | drift ratio | final prompt tok |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| S1 | Rust | 16/16 | **32.94** | 0.48 | 69.30 | 26.32 | 72.43 | 85.71 | **1.18** | 32717 |
+| S2 | Postgres | 16/16 | 0.28 | 0.34 | 51.95 | 32.67 | 74.88 | 77.75 | 1.04 | 33468 |
+| S3 | Linear algebra | 16/16 | 0.30 | 0.48 | 68.36 | 42.68 | 74.85 | 40.86 | 0.55 | 29697 |
+| S4 | Distributed systems | 16/16 | 0.53 | 0.38 | 53.51 | 45.04 | 78.40 | 43.30 | 0.55 | 30662 |
+
+- **TTFT proof**: S1 first-turn TTFT was **32.94 s**; all subsequent first-turn TTFTs were sub-second. This matches Run 002b's 33.19 s to within 0.25 s — the JIT cost on request 1 is reproducible, memory-free, and a true once-per-engine-lifetime event.
+- **Latency drift**: three sessions *decreased* (S3/S4 p95 shrunk because their last-4 turns ran at concurrency 1–3 as other workers finished first). S1 grew 18 %, S2 grew 4 %. All well under the 2× threshold.
+- Sessions finished in order S1 → S3 → S2 → S4 (temperature 0.7 produced unpredictable but roughly balanced pacing).
+
+**Peak memory sources:**
+- Baseline (driver start): **69.45 GiB** (lower than initial free -m at container-start because engine still settling)
+- Peak used: **70.86 GiB**
+- Total memory swing across the entire ~27 min run: **1.41 GiB**
+
+The run is arguably the calmest the engine has ever looked under load — calmer than Run 002b (1.1 GiB swing, but sequential) and a totally different universe from Run 002 (5.7 GiB transient in 24 s with `running=0`).
+
+**Revised `peak_steady` coefficient — three data points now:**
+
+| Run | pool (GiB) | peak_steady (GiB) | implied const |
+|---|---:|---:|---:|
+| 001 | 8.93 | 69.93 | 61.0 |
+| 002b | 9.72 | 68.02 | 58.3 |
+| 002c | 11.41 | 70.86 | **59.45** |
+
+Mean const ≈ **59.58 ± 1.4 GiB** (sample stdev across three runs). Treat 59.5 + pool as the working center estimate and carry ±1.5 GiB as known noise. The fit is not monotonic in pool size — pool 11.41 is the largest but produced a mid-range const — consistent with the variance being driven by something other than pool alone (likely allocation ordering at startup).
+
+**What Run 002c does NOT prove — the prefix-caching fill-masking finding:**
+
+The plan's intent was to drive KV toward 80–90 % fill. Observed peak `kv_pct` was only **13.5 %**. Post-run analysis:
+
+- Each session's turn-N prompt is ~99 % prefix-cache hit against turn-(N−1)'s prompt + response. Only ~2600 new tokens per session per turn actually require fresh KV allocation (new user message + new assistant response).
+- With `enable_prefix_caching=True`, vLLM's `GPU KV cache usage` metric appears to report **currently-live active blocks only** — blocks that are "held for reuse" by the prefix cache count as free pool, not as used KV. Measured growth in `free -m used` (+1.41 GiB) is consistent with ~15 % fill, matching the reported kv_pct.
+- Net result: **this test characterized concurrent steady-state memory with prefix caching active, not raw KV fill.** To measure actual 80–90 % fill behavior, we need either:
+  1. `--enable-prefix-caching=false` (or driver-level disable) and run the same shape, **or**
+  2. Per-turn topic-divergent prompts that don't build on prior turns (so each turn is fresh KV), **or**
+  3. Significantly more concurrent sessions with distinct histories.
+
+None of these are blocking to the question we did answer (concurrency safety), but they're required to actually stress the pool.
+
+**Artifacts** (under `vLLM/runs/run_002c/`):
+- `run_002c_driver.txt` — full stdout summary
+- `run_002c_per_turn.csv` — 64 rows (4 sessions × 16 turns, all status=ok)
+- `run_002c_memtrail.csv` — 1635 samples at ~0.75 s effective cadence over the full ~20 min run window (docker-log scraping slowed the nominal 0.5 s cadence)
+
+### Planned follow-up runs (updated post-Run-002c)
+
+- **Run 003 candidate: `4 × 64K` at util ≈ 0.48** — **newly unblocked as primary candidate.** The corrected model projects 76 GiB peak_steady. With Run 002c proving concurrency tax is effectively 0 under this config (not +7 GiB), the cell should land under 78 GiB — 10 GiB of headroom to the 88 GiB kill switch. Worth promoting. Caveat: still need to prove KV-fill memory growth under high fill, which Run 002c did not characterize.
+- **Run 002d candidate: prefix-cache-off replay of Run 002c** — disable prefix caching, same shape, to actually push KV toward 80–90 % fill and measure the memory behavior the pool math predicts. This is the *real* high-fill characterization that Run 002 was designed to produce and Run 002c did not (despite passing all criteria). Moderate priority.
+- **Run 004 candidate: `1 × 262K` at util ≈ 0.48** — still a worthwhile isolated bound check. Projection 76.3 GiB, no concurrency confound by construction. Low risk.
+- **Run 002e candidate** (deferred): warm-engine concurrent pre-warm — send a synthetic 4-concurrent burst right after health, verify no spike, *then* start the real load test. Lower priority now that Run 002c shows the cold-start engine already behaves well; this would be a belt-and-suspenders safety net rather than a discovery run.
 
 ## Known uncertainties (tracked across runs)
 
@@ -309,61 +392,58 @@ The plan classified outcomes as A/B/C (per-spike framework) or D (no spike). Run
 3. **Prefix cache slack** — vLLM will grab extra KV pool within the util budget for prefix caching. If the workload repeatedly hits long shared prefixes (likely for coding), prefix cache can dominate. **Not yet measured at high fill** — Run 002 was killed before reaching the phase that would have exercised this.
 4. **Swap interaction** — the host already has ~5.7 GiB of pre-existing baseline swap. Run 002 saw the driver-start swap baseline at 9.83 GiB (3.6 GiB above the dry-run baseline 50 s earlier — unclear what allocated). Peak swap during the run was +0.17 GiB above baseline, so the kill switch's swap criterion was never triggered. But the *baseline shifting* between runs is itself a flag.
 5. **`--enforce-eager=true`** is currently set; disabling for throughput is a separate experiment. Don't conflate with resource planning.
-6. **(REFINED by Run 002b) Concurrency-bound memory transient (NOT cold-engine).** Run 002b proved that *sequential* requests against a fresh container are well-behaved (~1 GiB total memory swing across 4 requests, no spike). The Run 002 spike is therefore tied specifically to **concurrent batch arrival**, not to engine coldness or first-request work. The JIT compilation that does happen on the first request (33 s TTFT, see Run 002b) is **memory-free** — it consumes only time, not RAM. So a "pre-warm with one dummy request" strategy fixes TTFT but **does not fix the Run 002 spike**. The next investigation needs a synthetic *concurrent* pre-warm. We still don't know which subsystem (chunked-prefill workspace, parallel scheduler buffers, multi-batch attention/MoE kernels) causes the concurrent allocation, but we now know which codepath to instrument.
-7. **(NEW)** vLLM `Available KV cache memory` is **not deterministic across cold starts** of the same image with the same `.env`. Run 001 → 8.93 GiB, Run 002 → 9.91 GiB, Run 002b → 9.72 GiB. ~1 GiB drift across three cold starts. Need to understand what other GPU-resident state changes between starts and whether the variance is bounded.
-8. **(NEW, opened by Run 002b)** The corrected `peak_steady` coefficient (61.0) appears **~3 GiB too high**. Run 002b observed peak_steady ≈ 68.02 GiB at pool 9.72 → const ≈ 58.3. Run 001 measured const ≈ 61.0 at pool 8.93. Either Run 001's measurement was contaminated by transient state, or the actual constant varies with pool size in a non-additive way. Track on the next run; do not commit a new constant from one data point.
+6. **(REFINED by Run 002c) Concurrency-bound memory transient — NOT reproducible under current conditions.** Run 002b ruled out the cold-engine/JIT-compile hypothesis. Run 002c was specifically designed to re-provoke the Run 002 spike via a ramped 1→2→3→4 concurrency transition under the same config. **The spike did not reproduce.** Peak memory during each ramp transition was 70.76–70.79 GiB (within 0.04 GiB of each other and only ~0.4 GiB above the solo-serving floor). The "+5–7 GiB first-concurrent-batch tax" is therefore **not** a universal property of this config; Run 002's 80.79 GiB spike was either situational to that specific cold-start state (pool 9.91 GiB, different startup allocation ordering) or required an allocation codepath that Run 002c's engine instance did not traverse. **Open question downgraded**: the spike is now a known unknown with one observation and three non-observations, rather than a binding constraint on the config matrix. Until we can provoke it again deliberately, treat the +7 GiB caveat as an *upper-bound* excursion risk rather than an expected operating point.
+7. **(NEW, opened by Run 002)** vLLM `Available KV cache memory` is **not deterministic across cold starts** of the same image with the same `.env`. Run 001 → 8.93 GiB, Run 002 → 9.91 GiB, Run 002b → 9.72 GiB, **Run 002c → 11.41 GiB**. Span is now **2.48 GiB across 4 cold starts**, and the drift is *widening* rather than converging. Run 002c's pool is 1.7 GiB larger than Run 002b's under identical config. The driver-start baseline also shifted in lockstep (Run 002b baseline ~67 GiB, Run 002c baseline 69.45 GiB at driver start, with free -m showing 72.44 GiB even earlier during container warmup). Leading hypothesis: vLLM's util-budget split between weights / workspace / pool depends on other GPU-resident state at startup, and noise in that state (possibly the STT service's 3.5 GiB GPU residency, possibly kernel-level memory fragmentation) propagates into pool size. Needs a standalone 5-cold-start experiment to bound the variance.
+8. **(NEW, opened by Run 002b; third data point from Run 002c)** The `peak_steady` coefficient varies across runs. Three data points:
 
-## Next steps (post Run 002b)
+   | Run | pool (GiB) | peak_steady (GiB) | implied const |
+   |---|---:|---:|---:|
+   | 001 | 8.93 | 69.93 | 61.0 |
+   | 002b | 9.72 | 68.02 | 58.3 |
+   | 002c | 11.41 | 70.86 | 59.45 |
 
-Run 002b refined the understanding considerably. We now know:
+   Mean ≈ **59.58 GiB**, sample stdev ≈ **1.4 GiB**. The relationship is not monotonic in pool size (002c has the largest pool but a middle const), so the variance is not purely a pool artifact. **Working model for planning**: `peak_steady ≈ 59.5 + pool_GiB ± 1.5 GiB` (carry the noise band explicitly; do not round it away). Revise again after Run 003 or any subsequent high-fill run.
+9. **(NEW, opened by Run 002c)** `enable_prefix_caching=True` **masks the `GPU KV cache usage` metric** from representing raw KV pool fill. Run 002c generated ~42 K tokens per session of accumulated chat history (4 sessions × ~168 K tokens total) but saw peak kv_pct of only 13.5 %. The gap is explained by vLLM's metric reporting *currently-live active blocks* while prefix-cached blocks held for reuse count as free. `free -m used` growth (+1.41 GiB) confirms the low *actual* allocation, so vLLM is genuinely not pushing the pool — the prefix cache is reusing almost all history-derived blocks, even across turn boundaries. **Consequence for planning**: any multi-turn history-replay workload will under-exercise the KV pool unless prefix caching is disabled. To measure raw KV-fill memory behavior, either disable prefix caching, use topic-divergent per-turn prompts that invalidate the prefix, or run enough concurrent sessions that the prefix cache turns over.
 
-- ✅ JIT compile work on the first real request is real (~33 s TTFT) but **memory-free**
-- ✅ Sequential requests are well-behaved (~1 GiB total swing) — the kill switch never approached 88
-- ✅ The Run 002 spike is **concurrency-bound**, not coldness-bound — it lives somewhere on the parallel-batch codepath, not the cold-engine codepath
-- ❓ Which specific subsystem allocates on parallel arrival is still unknown (chunked-prefill workspace? scheduler? multi-batch attention?)
-- ❓ Whether a *concurrent* synthetic pre-warm cancels the spike permanently is the next experiment
+## Next steps (post Run 002c)
 
-### Run 002c — concurrent pre-warm test (the next plan)
+Run 002c cleanly passed a full-concurrency multi-turn test that Run 002 could not survive, without needing any pre-warm step. Consolidated state of knowledge:
 
-**Objective:** demonstrate that pre-warming the engine with a synthetic 4-concurrent batch immediately after health-pass eliminates the Run 002 memory spike on subsequent 4-concurrent traffic.
+- ✅ JIT compile work on the first real request is real (~33 s TTFT on both Run 002b and Run 002c, matching to within 0.25 s) but **memory-free** — needs no mitigation for planning, only for first-user latency.
+- ✅ Sequential requests are well-behaved (Run 002b: ~1 GiB swing).
+- ✅ **Concurrent ramped start from cold is also well-behaved** (Run 002c: ~1.4 GiB total swing across 27 min of 4-concurrent load). The +7 GiB caveat that blocked the 4×64K promotion is **not general**.
+- ✅ Three runs of steady-state data now, giving a coefficient estimate of **59.5 + pool ± 1.4 GiB** for planning.
+- ❓ **What actually caused Run 002's 80.79 GiB spike is still unknown.** We have one observation and three non-observations; the observation is either (a) a genuine rare path that Run 002c did not reach, (b) situational to Run 002's specific startup ordering, or (c) a measurement artifact we haven't identified. Do not treat it as "solved" — treat it as "bounded but unexplained".
+- ❓ **KV pool fill at 80–90 % has still not been characterized.** Run 002c's prefix-caching interaction kept kv_pct at 13.5 % despite driving ~168 K total tokens of chat history. The high-fill test Run 002 was designed to produce is still unmeasured.
+- ❓ **Pool size drift is getting wider, not tighter.** Four cold starts, 2.48 GiB span, and the drift is not explained. Affects every planning projection.
 
-**Shape:**
+### Run 003 candidate: `4 × 64K` at util ≈ 0.48 — **newly unblocked, highest priority**
 
-1. Cold start container, wait for `/health`
-2. **Concurrent pre-warm step**: send 4 simultaneous chat requests with `max_tokens=16` (just enough to engage the parallel codepath without using meaningful KV). Capture memory during this. Expectation: a one-shot spike of ~5–7 GiB, releasing back to baseline within ~30 s.
-3. **Wait for memory to settle** (60 s observation window)
-4. **Run the original Run 002 Phase A** (4 × 4 × 1500): the real concurrent load test. Expectation: no spike, because the pre-warm already paid the concurrency-allocation cost.
-5. If Phase A passes cleanly, proceed to Phase B and Phase C — the high-fill characterization that Run 002 was originally designed to do.
+The corrected-model projection is ~76 GiB at steady state (util 0.48, peak_steady ≈ 59.5 + ~13.5 pool at 64K = ~73). With the +7 GiB concurrency-tax caveat relaxed by Run 002c, this cell lands under 78 GiB with ~10 GiB of headroom to the 88 GiB kill switch. The ramped multi-turn shape from Run 002c is a good regression harness: reuse it with `max_model_len=65536` and adjust `max_tokens` accordingly. Main risk: we still have not measured high-KV-fill memory behavior empirically, so the projection may under-estimate in the one direction that matters.
 
-**Driver:** new file `vLLM/scripts/run_002c_prewarm.py`, derived from `run_002_load_test.py` with a `pre_warm()` step inserted before the first phase. Reuses Monitor / KillState / parsers verbatim.
+### Run 002d candidate: prefix-cache-off replay — measure real KV fill
 
-**Cap policy for Run 002c:** keep the 90 GiB ceiling, kill switch 88. If the pre-warm spike fits under 80 (the original cap), drop back to 80/78. If it doesn't, we've learned that pre-warm itself needs the extra headroom.
+**Objective:** actually hit 80–90 % KV pool fill and measure the memory curve, which Run 002c did not do despite passing all criteria.
 
-**Success criteria for Run 002c:**
-1. Pre-warm spike observed (proof we triggered it deterministically) and resolves before Phase A starts
-2. Phase A completes without tripping the kill switch
-3. Phase B completes
-4. Phase C completes — gives us the high-fill measurements that were the entire point of Run 002
+**Shape:** same ramped structure as Run 002c but with `--no-enable-prefix-caching` (or driver-level override if available) **or** with topic-divergent per-turn prompts that deliberately defeat the prefix cache. Everything else identical. Priority: moderate — Run 003 is more useful as a next promotion step, but Run 002d is required to fully close out the original Run 002 scope.
 
-### Run 002d (deferred) — log forensics on the concurrent codepath
+### Run 002e candidate (deferred): log forensics on the Run 002 spike
 
-If 002c does not eliminate the spike, the next move is to read vLLM source / docker logs around the spike window for whichever subsystem allocates on first parallel arrival. Candidates: `vllm/v1/engine/core.py`, `vllm/attention/backends/flashinfer.py`, chunked-prefill scheduler, marlin MoE first-call autotune. Cheap if 002c works; only needed if it doesn't.
+If Run 003 or Run 002d re-provokes a concurrency-bound spike, read vLLM source / docker logs around the window for the subsystem doing the allocation. Candidates (unchanged from prior): `vllm/v1/engine/core.py`, `vllm/attention/backends/flashinfer.py`, chunked-prefill scheduler, marlin MoE first-call autotune. Deprioritized because we now have one full run that *doesn't* trip it; we should wait for a second provocation before spending time on log archaeology.
 
 ### Other observations to pursue
 
-- **Pool size drift** (item 7 above): three cold starts, three different pool sizes (8.93 / 9.91 / 9.72 GiB). This affects every projection. Worth a small standalone experiment: cold-start the container 5 times, capture the pool size each time. If the variance is bounded (~±1 GiB) we can budget for it; if it's wider, it warrants a config or env investigation.
-- **`peak_steady` coefficient revision** (item 8): Run 002b's 58.3 vs Run 001's 61.0 needs a third data point to commit a new constant. Run 002c's Phase B/C steady states will give us that.
-- **The 4 × 64K promotion** is still blocked by the corrected matrix with the +7 GiB cold-start tax. After Run 002c characterizes what the *concurrent* spike actually costs (it may be smaller than the +7 GiB scary number we extrapolated from Run 002), the matrix may unblock 4 × 64K with a pre-warm.
+- **Pool size drift** (item 7): a small standalone experiment — cold-start the container 5 times and capture `Available KV cache memory` each time. 4 observations so far span 2.48 GiB, which is a lot of noise for a single projection term. Want to know whether the variance is bounded and whether it correlates with STT service GPU residency or any other external state.
+- **`peak_steady` coefficient** (item 8): Run 003 and/or Run 002d will produce the fourth and fifth data points. Do not commit a final constant until we have at least five points, and especially not until we have one that crosses 50 % KV fill (every current point is at <15 % fill).
+- **The 4 × 64K promotion**: newly unblocked by Run 002c, but the KV-fill uncertainty from item 9 means Run 003 should be treated as the *first* high-fill measurement, not a pure config promotion. If anything surprising appears, fall back to Run 002d first.
 
 ### Cap policy
 
-The original 80 GiB hard cap held through Run 001 and Run 002b without ever being touched. Run 002 briefly exceeded it at 80.79 GiB, but that was during a transient our kill switch (correctly) caught. Run 002b ran with 90 GiB lifted ceiling and used at most 68 GiB — so the lifted ceiling was unused observability headroom, exactly as intended.
-
-Going forward, the cap should be interpreted as **"steady-state ceiling, brief transients within headroom are acceptable if the swap criterion stays clean"**. The kill switch encodes the policy. Until Run 002c proves the concurrent spike is well-bounded, keep the kill switch at 88 GiB on any concurrent test.
+The 90 GiB lifted ceiling with 88 GiB kill switch held through Run 002b and Run 002c without ever being touched (Run 002c peak 70.86 GiB — 17 GiB of unused headroom). The ceiling/kill-switch pair can stay at 90/88 for Run 003 and any other concurrent high-fill test. If Run 003 or 002d also passes cleanly, consider dropping back to 80/78 for steady operation, but retain 90/88 for new-config exploration.
 
 ### The doc itself
 
-After Run 002c lands, this document should be reorganized: the *pre-Run-001* SUPERSEDED sections can probably be archived (moved to a separate `resource-utilization-history.md` or similar) and the calibration log promoted to the top. We've now run enough experiments that the historical planning content is more confusing than useful. Wait until 002c to make that structural change — one more run will produce the final coefficient set.
+After Run 003 lands, this document should finally be restructured: the pre-Run-001 SUPERSEDED sections moved to `resource-utilization-history.md`, the calibration log promoted to the top, the matrix regenerated against the revised coefficient, and Known Uncertainties trimmed to just the still-open items. We now have enough data (4 runs) that the historical planning content is more distracting than useful, but one more run at a different (seqs, ctx) cell will make the restructure far more informative.
 
 ## Commands used for observation
 
@@ -391,10 +471,12 @@ uv run bootstrap-vllm logs --tail 400 | grep -E 'NvFp4|FLASHINFER|MARLIN|fp8|att
 - `/tmp/vllm-run-002-continuation.md` — Run 002 session handoff (corrected coefficients, the four open questions, the locked-in decisions)
 - `/home/steve/.claude/plans/zesty-giggling-crystal.md` — Run 001 plan (4 × 48K calibration)
 - `/home/steve/.claude/plans/twinkly-giggling-eagle.md` — Run 002 plan (load test against 4 × 48K)
-- `/home/steve/.claude/plans/greedy-crafting-mochi.md` — Run 002b plan (sequential warmup characterization)
+- `/home/steve/.claude/plans/greedy-crafting-mochi.md` — Run 002c plan (ramped multi-turn high-fill characterization; originally Run 002b plan, repurposed in-session after 002b completed)
 - `/home/steve/.claude/plans/woolly-dreaming-wave.md` — original NVFP4 harness code-change plan
 - `vLLM/scripts/run_002_load_test.py` — Run 002 driver (committed `630ec8a`)
 - `vLLM/scripts/run_002b_sequential.py` — Run 002b driver (committed `630ec8a`)
+- `vLLM/scripts/run_002c_ramped.py` — Run 002c driver
 - `vLLM/runs/run_002/` — Run 002 artifacts (driver log, turns CSV, memtrail CSV)
 - `vLLM/runs/run_002b/` — Run 002b artifacts (driver log, per-request CSV, memtrail CSV)
+- `vLLM/runs/run_002c/` — Run 002c artifacts (driver log, per-turn CSV, memtrail CSV)
 - HF model card: https://huggingface.co/saricles/Qwen3-Coder-Next-NVFP4-GB10
