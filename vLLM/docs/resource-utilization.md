@@ -378,9 +378,11 @@ None of these are blocking to the question we did answer (concurrency safety), b
 - `run_002c_per_turn.csv` — 64 rows (4 sessions × 16 turns, all status=ok)
 - `run_002c_memtrail.csv` — 1635 samples at ~0.75 s effective cadence over the full ~20 min run window (docker-log scraping slowed the nominal 0.5 s cadence)
 
-### Run 002d — Enriched Multi-Turn Content-Stress Characterization (KILLED)
+### Run 002d — Enriched Multi-Turn Content-Stress Characterization (PASS)
 
-**Date:** 2026-04-13. **Verdict: KILLED** (S1 turn 7 HTTP 400 — context overflow at ~42 K prompt tokens vs 48 K window).
+**Date:** 2026-04-13. **Verdict: PASS** (36/36 turns, all criteria met).
+
+Initial run was KILLED (S1 turn 7 HTTP 400 — context overflow at ~42 K prompt tokens vs 48 K window). Retry added a context-window guard (`trim_history_to_budget` drops oldest user/assistant pairs when prompt exceeds 88 % of `max_model_len`), JSONL transcript format, and extracted shared infrastructure into `run_lib.py`.
 
 **Objective:** enrich the per-session content — real code files as seeds, scenario-specific follow-ups, max_tokens=7000 — to determine whether content richness pushes the KV pool past 002c's 13.5 % kv_pct ceiling. Prefix caching stayed enabled (production parity). Additionally: first run with a full conversation transcript artifact.
 
@@ -392,44 +394,43 @@ None of these are blocking to the question we did answer (concurrency safety), b
 
 | Criterion | Result |
 |---|---|
-| Completion rate | **30 / 36** ok, 1 HTTP error → **FAIL** (S1 t7 HTTP 400: prompt overflowed 48K context window) |
-| Peak host memory | **74.92 GiB** (< 88 GiB) → PASS |
-| Swap growth | **+0.41 GiB** (< 1.5 GiB) → PASS |
-| Latency drift | All sessions pass (max ratio 1.34× S2) |
-| KV pool peak | **15.4 %** (vs 002c's 13.5 %, modest increase) |
-| Peak vs projection | Observed 74.92 GiB vs projected 73.17 GiB (Δ +1.75) → implied `peak_steady` const = **62.75** |
+| Completion rate | **36 / 36** ok, 0 errors → **PASS** |
+| Peak host memory | **75.06 GiB** (< 88 GiB) → PASS |
+| Swap growth | **+0.22 GiB** (< 1.5 GiB) → PASS |
+| Latency drift | All sessions pass (max ratio 1.45× S2) |
+| KV pool peak | **21.8 %** (vs 002c's 13.5 %, meaningful increase) |
+| Peak vs projection | Observed 75.06 GiB vs projected 70.18 GiB (Δ +4.88) → implied `peak_steady` const = **65.88** |
 
 **Per-session completion:**
 
-| Session | Topic | Turns ok | kv max | Notes |
-|---|---|---:|---:|---|
-| S1 | Code refactor (smb.py) | 6 / 9 | 15.4 % | HTTP 400 on turn 7: prompt ~42 K tokens hit 48 K limit. JIT first-turn TTFT 35.6 s. |
-| S2 | Code refactor (bootstrap_vllm) | 8 / 9 | 15.4 % | Stopped by kill switch (triggered by S1 error), not by own error. |
-| S3 | Incident postmortem | 9 / 9 | 15.4 % | Completed all turns successfully. |
-| S4 | ADR evolution (flagforge) | 7 / 9 | 15.4 % | Stopped by kill switch. |
+| Session | Topic | Turns ok | kv max | Final prompt tokens | Notes |
+|---|---|---:|---:|---:|---|
+| S1 | Code refactor (smb.py) | 9 / 9 | 21.8 % | 38,780 | Context guard trimmed history on later turns. JIT TTFT 35.6 s. |
+| S2 | Code refactor (bootstrap_vllm) | 9 / 9 | 21.8 % | 34,057 | |
+| S3 | Incident postmortem | 9 / 9 | 21.8 % | 37,011 | |
+| S4 | ADR evolution (flagforge) | 9 / 9 | 21.8 % | 38,932 | |
 
-**Pool size (fifth cold-start data point):** 12.17 GiB (prior: 8.93, 9.91, 9.72, 11.41). Drift span now **3.24 GiB** across 5 cold starts. This is the largest pool observed so far.
+**Pool size (sixth cold-start data point):** 9.18 GiB (prior: 8.93, 9.91, 9.72, 11.41, 12.17). Drift span now **3.24 GiB** across 6 cold starts. The pool swung from 12.17 (run 5) back down to 9.18 (run 6), confirming the variance is non-monotonic.
 
 **`running` × `kv_pct` correlation — scheduler-serialization vs prefix-cache-masking diagnostic:**
 
 | running | samples | max kv | mean kv |
 |---:|---:|---:|---:|
-| 1 | 77 | 4.4 % | 1.6 % |
-| 2 | 122 | 7.9 % | 5.4 % |
-| 3 | 91 | 11.8 % | 6.3 % |
-| 4 | 1137 | 15.4 % | 10.5 % |
+| 0 | 39 | 0.0 % | 0.0 % |
+| 1 | 241 | 6.2 % | 4.8 % |
+| 2 | 176 | 10.6 % | 7.1 % |
+| 3 | 160 | 15.7 % | 9.9 % |
+| 4 | 1257 | 21.8 % | 15.0 % |
 
-**running=4 max / running=1 max = 15.4 / 4.4 = 3.5×** — pool fills roughly linearly with concurrency. This confirms that **prefix caching was the dominant mask in 002c**, not scheduler serialization. Each concurrent session genuinely consumes separate KV memory; the prefix cache is reusing within-session turn history (not blocking cross-session allocation). The reason kv_pct remains low (~15 %) is that even at max_tokens=7000, the model's actual KV footprint per session is only ~3–4 % of the pool.
+**running=4 max / running=1 max = 21.8 / 6.2 = 3.5×** — pool fills linearly with concurrency, confirming the KILLED run's finding. **Prefix caching is the within-session KV mask**, not scheduler serialization. Each concurrent session holds independent KV memory; the prefix cache deduplicates turn-over-turn history within each session.
 
-**Why kv_pct is still only 15 % despite enriched content:** the fill math shows 7000 completion tokens × 9 turns × 4 sessions = 252 K generation-token budget, but (a) not all turns generated the full 7000 tokens (many hit 3–4 K), (b) the 48 K context window limits how much history accumulates per session, and (c) prefix cache reuses turn-over-turn history within each session. To genuinely push 80+ % kv_pct, we would need either: more concurrent sessions, longer context windows, or prefix caching disabled (which the user has explicitly rejected for production parity).
-
-**Context overflow root cause:** S1 accumulated ~35 K prompt tokens by turn 6. Turn 7's prompt (35 K + 7 K completion + follow-up) pushed past 48 K, triggering vLLM's HTTP 400 rejection. The other sessions (S2–S4) had smaller seeds and shorter completions, keeping them under the limit. Fix for future runs: add a context-window guard that truncates early history if the accumulated prompt approaches 90 % of `max_model_len`.
+**Why kv_pct reached 21.8 % this time vs 15.4 % on the KILLED run:** smaller pool (9.18 vs 12.17 GiB). The same absolute KV allocation fills a larger fraction. kv_pct = allocated_blocks / pool_blocks, so a 25% smaller pool yields proportionally higher percentages. The actual KV memory consumed was similar (~2.0 GiB peak across 4 sessions).
 
 **Artifacts** (under `vLLM/runs/run_002d/`):
 - `run_002d_driver.txt` — full stdout summary
-- `run_002d_per_turn.csv` — 31 rows (30 ok + 1 error)
-- `run_002d_memtrail.csv` — 1480 samples at ~0.5–1 s cadence
-- `run_002d_transcript.md` — full conversation transcript (514 KB, first run with this artifact)
+- `run_002d_per_turn.csv` — 36 rows (4 sessions × 9 turns, all ok)
+- `run_002d_memtrail.csv` — 1872 samples at ~0.5–1 s cadence
+- `run_002d_transcript.jsonl` — JSONL conversation transcript (740 KB). First record is metadata (system prompt, config); subsequent records are per-turn with full user/assistant content, status, metrics, and raw vLLM usage dict.
 
 ### Planned follow-up runs (updated post-Run-002d)
 
@@ -446,17 +447,18 @@ None of these are blocking to the question we did answer (concurrency safety), b
 4. **Swap interaction** — the host already has ~5.7 GiB of pre-existing baseline swap. Run 002 saw the driver-start swap baseline at 9.83 GiB (3.6 GiB above the dry-run baseline 50 s earlier — unclear what allocated). Peak swap during the run was +0.17 GiB above baseline, so the kill switch's swap criterion was never triggered. But the *baseline shifting* between runs is itself a flag.
 5. **`--enforce-eager=true`** is currently set; disabling for throughput is a separate experiment. Don't conflate with resource planning.
 6. **(REFINED by Run 002c) Concurrency-bound memory transient — NOT reproducible under current conditions.** Run 002b ruled out the cold-engine/JIT-compile hypothesis. Run 002c was specifically designed to re-provoke the Run 002 spike via a ramped 1→2→3→4 concurrency transition under the same config. **The spike did not reproduce.** Peak memory during each ramp transition was 70.76–70.79 GiB (within 0.04 GiB of each other and only ~0.4 GiB above the solo-serving floor). The "+5–7 GiB first-concurrent-batch tax" is therefore **not** a universal property of this config; Run 002's 80.79 GiB spike was either situational to that specific cold-start state (pool 9.91 GiB, different startup allocation ordering) or required an allocation codepath that Run 002c's engine instance did not traverse. **Open question downgraded**: the spike is now a known unknown with one observation and three non-observations, rather than a binding constraint on the config matrix. Until we can provoke it again deliberately, treat the +7 GiB caveat as an *upper-bound* excursion risk rather than an expected operating point.
-7. **(NEW, opened by Run 002; fifth data point from Run 002d)** vLLM `Available KV cache memory` is **not deterministic across cold starts** of the same image with the same `.env`. Run 001 → 8.93 GiB, Run 002 → 9.91 GiB, Run 002b → 9.72 GiB, Run 002c → 11.41 GiB, **Run 002d → 12.17 GiB**. Span is now **3.24 GiB across 5 cold starts**, and the drift continues upward. Run 002d's pool is 0.76 GiB larger than Run 002c's. Leading hypothesis unchanged: vLLM's util-budget split depends on GPU-resident state at startup. The upward trend may also reflect system-level memory layout changes (kernel updates, driver state) rather than pure randomness. Needs the standalone 5-cold-start experiment to bound the variance.
-8. **(NEW, opened by Run 002b; fourth data point from Run 002d)** The `peak_steady` coefficient varies across runs. Four data points:
+7. **(NEW, opened by Run 002; sixth data point from Run 002d retry)** vLLM `Available KV cache memory` is **not deterministic across cold starts** of the same image with the same `.env`. Run 001 → 8.93 GiB, Run 002 → 9.91 GiB, Run 002b → 9.72 GiB, Run 002c → 11.41 GiB, Run 002d (killed) → 12.17 GiB, **Run 002d (retry) → 9.18 GiB**. Span is **3.24 GiB across 6 cold starts**. The pool swung from 12.17 back to 9.18 on consecutive runs, confirming the variance is non-monotonic and not a persistent upward drift. Leading hypothesis: GPU-resident state at startup (including the STT service's 3.5 GiB and kernel memory fragmentation) controls the util-budget split.
+8. **(NEW, opened by Run 002b; fifth data point from Run 002d retry)** The `peak_steady` coefficient varies across runs. Five data points:
 
    | Run | pool (GiB) | peak_steady (GiB) | implied const |
    |---|---:|---:|---:|
    | 001 | 8.93 | 69.93 | 61.0 |
    | 002b | 9.72 | 68.02 | 58.3 |
    | 002c | 11.41 | 70.86 | 59.45 |
-   | 002d | 12.17 | 74.92 | 62.75 |
+   | 002d (killed) | 12.17 | 74.92 | 62.75 |
+   | 002d (retry, PASS) | 9.18 | 75.06 | 65.88 |
 
-   Mean ≈ **60.38 GiB**, sample stdev ≈ **1.9 GiB**. Run 002d pulled the mean up by ~0.8 GiB (largest const so far at 62.75). Note: 002d was KILLED mid-run, so the peak may not represent true steady-state — S1's context overflow and the kill-switch trip may have caused a transient memory spike. **Working model for planning**: `peak_steady ≈ 60.5 + pool_GiB ± 2.0 GiB` (widened noise band to accommodate 002d's outlier). Still need a clean PASS at high fill to know whether the coefficient shifts with KV utilization level.
+   Mean ≈ **61.48 GiB**, sample stdev ≈ **2.9 GiB**. The 002d retry has the highest const (65.88) despite the smallest pool (9.18). This is concerning — it may indicate that higher KV fill (21.8% vs prior runs' <15%) does increase the overhead constant, or that some other startup-dependent factor pushed host memory higher. Note the 002d retry peak of 75.06 GiB included a brief spike to 75.06 during the session wind-down phase (running dropping from 4→3→2→1). **Working model for planning**: `peak_steady ≈ 61.5 + pool_GiB ± 3.0 GiB` (widened again). The noise band is uncomfortably large; Run 003 at 64K is critical for determining whether the variance tightens at a different config or is inherent to this host.
 9. **(NEW, opened by Run 002c; PARTIALLY CONFIRMED by Run 002d)** `enable_prefix_caching=True` **masks the `GPU KV cache usage` metric** from representing raw KV pool fill. Run 002c saw 13.5 % kv_pct; Run 002d (enriched content, max_tokens=7000) saw 15.4 % — a modest increase despite much richer content. **Run 002d's running × kv_pct correlation confirms the mechanism**: kv_pct scales roughly linearly with concurrency (running=1 max 4.4 %, running=4 max 15.4 %, ratio 3.5×). This proves: (a) prefix caching is the within-session mask (each session reuses its own history), NOT scheduler serialization, and (b) cross-session KV allocation is genuinely independent (no sharing). The reason kv_pct stays at ~15 % is that each session's actual KV footprint is only ~3–4 % of the pool after prefix deduplication. **Consequence for planning**: to push past 15–20 % kv_pct with prefix caching enabled, need either more concurrent sessions (>4) or longer context windows (64K+). The 80–90 % fill measurement originally planned for the Run 002 series is not achievable at 4×48K with prefix caching enabled.
 
 ## Next steps (post Run 002d)
