@@ -9,6 +9,8 @@
 | [`mesh/`](mesh/) | Mesh networking between machines | Python CLI (Headscale + Syncthing) |
 | [`vms/`](vms/) | QEMU/KVM virtual machine management | Bash scripts |
 
+> **Note:** The vLLM deployment project has moved to its own repo: [steveant/aeo-vllm-gb10](https://github.com/steveant/aeo-vllm-gb10)
+
 ## Configuration
 
 Copy `.env.example` to `.env` and customize for your environment:
