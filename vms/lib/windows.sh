@@ -1,59 +1,101 @@
 #!/bin/bash
 # Windows VM Overlay Lifecycle
-# Golden image + copy-on-write overlay pattern for instant Windows VMs
+# Base image + copy-on-write overlay pattern for instant Windows VMs
 #
 # Usage: source this file, then call the functions.
 # Requires: lib/network.sh, lib/detect.sh to be sourced first.
 
-GOLDEN_DIR="${GOLDEN_DIR:-/storage/golden}"
-GOLDEN_WINDOWS_DISK="${GOLDEN_DIR}/windows-test.qcow2"
-GOLDEN_WINDOWS_VARS="${GOLDEN_DIR}/windows-test.vars"
-GOLDEN_WINDOWS_ROM="${GOLDEN_DIR}/windows-test.rom"
+BASE_IMAGE_DIR="${BASE_IMAGE_DIR:-${STORAGE_DIR}/base-images}"
+BASE_WINDOWS_DISK="${BASE_IMAGE_DIR}/windows-test.qcow2"
+BASE_WINDOWS_VARS="${BASE_IMAGE_DIR}/windows-test.vars"
+BASE_WINDOWS_ROM="${BASE_IMAGE_DIR}/windows-test.rom"
+# Answer file lives in the repo, not the storage directory
+AUTOUNATTEND_XML="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-images/autounattend.xml"
 OVERLAY_DIR="${OVERLAY_DIR:-/tmp}"
 
 # Default Windows VM settings
-WIN_RAM="${WIN_RAM:-8G}"
+WIN_RAM="${WIN_RAM:-6G}"
 WIN_CPUS="${WIN_CPUS:-4}"
 WIN_USER="${WIN_USER:-testuser}"
 WIN_SMBIOS_SERIAL="76XX5G4"
 
-# ─── Golden Image ──────────────────────────────────────────────────────
+# ─── Base Image ───────────────────────────────────────────────────────
 
-# Check golden image is ready
-# Returns 0 if all golden files present, 1 if any missing
-windows_golden_exists() {
-    [[ -f "$GOLDEN_WINDOWS_DISK" ]] && \
-    [[ -f "$GOLDEN_WINDOWS_VARS" ]] && \
-    [[ -f "$GOLDEN_WINDOWS_ROM" ]]
+# Check base image is ready
+# Returns 0 if all base image files present, 1 if any missing
+windows_base_image_exists() {
+    [[ -f "$BASE_WINDOWS_DISK" ]] && \
+    [[ -f "$BASE_WINDOWS_VARS" ]] && \
+    [[ -f "$BASE_WINDOWS_ROM" ]]
 }
 
-# Print golden image status
-windows_golden_status() {
-    echo "Golden Image ($GOLDEN_DIR)"
-    if [[ -f "$GOLDEN_WINDOWS_DISK" ]]; then
+# Print base image status
+windows_base_image_status() {
+    echo "Base Image ($BASE_IMAGE_DIR)"
+    if [[ -f "$BASE_WINDOWS_DISK" ]]; then
         local disk_size
-        disk_size=$(du -h "$GOLDEN_WINDOWS_DISK" 2>/dev/null | cut -f1)
+        disk_size=$(du -h "$BASE_WINDOWS_DISK" 2>/dev/null | cut -f1)
         print_check 1 "Disk: windows-test.qcow2" "$disk_size"
     else
         print_check 0 "Disk: windows-test.qcow2" "missing"
     fi
-    if [[ -f "$GOLDEN_WINDOWS_VARS" ]]; then
+    if [[ -f "$BASE_WINDOWS_VARS" ]]; then
         print_check 1 "UEFI vars: windows-test.vars"
     else
         print_check 0 "UEFI vars: windows-test.vars" "missing"
     fi
-    if [[ -f "$GOLDEN_WINDOWS_ROM" ]]; then
+    if [[ -f "$BASE_WINDOWS_ROM" ]]; then
         print_check 1 "UEFI ROM: windows-test.rom"
     else
         print_check 0 "UEFI ROM: windows-test.rom" "missing"
     fi
 }
 
+# ─── Modified Windows ISO ──────────────────────────────────────────────
+
+# Create a modified Windows ISO that auto-boots without "Press any key".
+# Swaps cdboot.efi for cdboot_noprompt.efi and bundles Autounattend.xml.
+# Args: source_iso, output_iso
+create_noprompt_iso() {
+    local source_iso="$1"
+    local output_iso="$2"
+
+    local workdir
+    workdir=$(mktemp -d)
+
+    # Extract the entire ISO
+    echo "    Extracting Windows ISO..."
+    7z x -o"$workdir" "$source_iso" >/dev/null
+
+    # Swap cdboot.efi with the no-prompt variant
+    cp "${workdir}/efi/microsoft/boot/cdboot_noprompt.efi" \
+       "${workdir}/efi/microsoft/boot/cdboot.efi"
+
+    # Add autounattend.xml at the root for Windows Setup discovery
+    cp "$AUTOUNATTEND_XML" "${workdir}/Autounattend.xml"
+
+    # Rebuild the ISO with UDF + EFI boot support
+    echo "    Rebuilding ISO with no-prompt boot + autounattend..."
+    genisoimage \
+        -o "$output_iso" \
+        -iso-level 3 \
+        -udf \
+        -allow-limited-size \
+        -J -r \
+        -eltorito-alt-boot \
+        -e "efi/microsoft/boot/efisys_noprompt.bin" \
+        -no-emul-boot \
+        "$workdir" 2>/dev/null
+
+    rm -rf "$workdir"
+}
+
 # ─── Overlay Lifecycle ─────────────────────────────────────────────────
 
-# Create instant overlay from golden image
+# Create instant overlay from base image
 # Args: name
 # Prints: overlay disk path
+# Returns 1 if base image missing (caller should handle)
 windows_overlay_create() {
     local name="$1"
 
@@ -62,20 +104,18 @@ windows_overlay_create() {
         return 1
     fi
 
-    if ! windows_golden_exists; then
-        echo "Error: golden image not found at $GOLDEN_DIR" >&2
-        echo "  Run: ./winvm.sh golden build" >&2
+    if ! windows_base_image_exists; then
         return 1
     fi
 
     local overlay_disk="${OVERLAY_DIR}/winvm-${name}.qcow2"
     local overlay_vars="${OVERLAY_DIR}/winvm-${name}.vars"
 
-    # Create qcow2 overlay backed by golden disk
-    qemu-img create -f qcow2 -b "$GOLDEN_WINDOWS_DISK" -F qcow2 "$overlay_disk"
+    # Create qcow2 overlay backed by base disk
+    qemu-img create -f qcow2 -b "$BASE_WINDOWS_DISK" -F qcow2 "$overlay_disk"
 
     # Copy UEFI vars (writable per-VM state)
-    cp "$GOLDEN_WINDOWS_VARS" "$overlay_vars"
+    cp "$BASE_WINDOWS_VARS" "$overlay_vars"
 
     echo "$overlay_disk"
     return 0
@@ -150,7 +190,7 @@ windows_vm_start() {
         -drive "file=${overlay_disk},id=data0,format=qcow2,cache=writeback,aio=threads,discard=on,detect-zeroes=on,if=none" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
         -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=1" \
-        -drive "file=${GOLDEN_WINDOWS_ROM},if=pflash,unit=0,format=raw,readonly=on" \
+        -drive "file=${BASE_WINDOWS_ROM},if=pflash,unit=0,format=raw,readonly=on" \
         -drive "file=${overlay_vars},if=pflash,unit=1,format=raw" \
         -object "rng-random,id=rng0,filename=/dev/urandom" \
         -device "virtio-rng-pci,rng=rng0" \
@@ -303,8 +343,8 @@ windows_vm_status() {
     echo "Windows VM: winvm-${name}"
     echo "-------------------------------------------------------"
 
-    # Golden image
-    windows_golden_status
+    # Base image
+    windows_base_image_status
     echo ""
 
     # Overlay

@@ -119,6 +119,12 @@ cd vms
 # Legacy individual scripts (still available)
 sudo ./setup-ubuntu-vm.sh           # One-time setup
 sudo ./start-ubuntu-vm.sh install   # First boot with ISO
+
+# Windows VMs (overlay lifecycle)
+sudo ./winvm.sh start meshtest    # Instant Windows VM from base image
+sudo ./winvm.sh ssh meshtest      # Connect via SSH
+sudo ./winvm.sh destroy meshtest  # Full teardown
+./winvm.sh image status           # Check base image
 ```
 
 ### VM Network
@@ -154,6 +160,8 @@ Commands: `info status`, `system_powerdown`, `quit`
 ## Directives
 
 - Validate before declaring root cause/solution
-- Request user validation for hardware/UI tests - no automated tests exist
+- Request user validation for hardware/UI tests not covered by integration tests
 - MINIMAL COMPLEXITY: Prefer existing tools over custom code
 - Version source of truth: pyproject.toml (mesh), VERSION (repo)
+- Single-flow idempotent processes: if a prerequisite is missing, build it inline rather than failing with instructions
+- Avoid industry jargon in naming — prefer plain language ("base image" not "golden image")

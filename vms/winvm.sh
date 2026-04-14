@@ -1,30 +1,30 @@
 #!/bin/bash
 # Windows VM Management
-# Uses golden image + copy-on-write overlays for instant, disposable Windows VMs
+# Uses base image + copy-on-write overlays for instant, disposable Windows VMs
 #
 # Usage:
-#   ./winvm.sh start <name> [--ip IP]    Start a new Windows VM from golden image
+#   ./winvm.sh start <name> [--ip IP]    Start a new Windows VM (auto-builds base image if needed)
 #   ./winvm.sh stop <name>               Graceful shutdown
 #   ./winvm.sh destroy <name>            Full teardown (stop + delete overlay)
 #   ./winvm.sh ssh <name>                Connect via SSH
 #   ./winvm.sh exec <name> <cmd>         Run command on VM via SSH
 #   ./winvm.sh status <name>             Check VM state
 #   ./winvm.sh list                      List running Windows VMs
-#   ./winvm.sh golden build              Build golden image (interactive, one-time)
-#   ./winvm.sh golden status             Check if golden image exists
-#   ./winvm.sh golden destroy            Remove golden image
+#   ./winvm.sh image build               Build base image (interactive, one-time)
+#   ./winvm.sh image status              Check if base image exists
+#   ./winvm.sh image destroy             Remove base image
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Global defaults (must be set before sourcing libs that reference them)
+STORAGE_DIR="${STORAGE_DIR:-${SCRIPT_DIR}/.images}"
+
 # Source library functions
 source "${SCRIPT_DIR}/lib/detect.sh"
 source "${SCRIPT_DIR}/lib/network.sh"
 source "${SCRIPT_DIR}/lib/windows.sh"
-
-# Global defaults (shared with vm.sh)
-STORAGE_DIR="${STORAGE_DIR:-/storage}"
 BRIDGE_NAME="br-vm"
 VM_SUBNET="192.168.50"
 HOST_IP="${VM_SUBNET}.1"
@@ -37,7 +37,7 @@ show_usage() {
 Usage: ./winvm.sh <command> [args]
 
 Instance commands:
-  start <name> [--ip IP]    Start a new Windows VM from golden image
+  start <name> [--ip IP]    Start a new Windows VM (auto-builds base image if needed)
   stop <name>               Graceful shutdown
   destroy <name>            Full teardown (stop + delete overlay)
   ssh <name>                Connect via SSH
@@ -45,21 +45,21 @@ Instance commands:
   status <name>             Check VM state
   list                      List running Windows VMs
 
-Golden image commands:
-  golden build              Build golden image (interactive, one-time)
-  golden status             Check if golden image exists
-  golden destroy            Remove golden image
+Base image commands:
+  image build               Build base image (interactive, one-time)
+  image status              Check if base image exists
+  image destroy             Remove base image
 
 Options:
   --ip IP       Override default IP (default: 192.168.50.200)
   --help, -h    Show this help
 
 Examples:
-  ./winvm.sh golden build              # One-time golden image creation
-  ./winvm.sh start meshtest            # Instant Windows VM
+  ./winvm.sh start meshtest            # Instant Windows VM (builds base image if needed)
   ./winvm.sh ssh meshtest              # SSH into it
   ./winvm.sh exec meshtest "hostname"  # Run a command
   ./winvm.sh destroy meshtest          # Tear it down
+  ./winvm.sh image build               # Manually (re)build base image
 EOF
 }
 
@@ -93,15 +93,17 @@ cmd_start() {
     echo "======================================================="
     echo ""
 
-    # Check golden image
-    if ! windows_golden_exists; then
-        echo "Golden image not found at $GOLDEN_DIR"
+    # Auto-build base image if missing
+    if ! windows_base_image_exists; then
+        echo "  Base image not found at $BASE_IMAGE_DIR"
+        echo "  Building base image first..."
         echo ""
-        echo "Build one first:"
-        echo "  sudo ./winvm.sh golden build"
-        exit 1
+        cmd_image_build
+        echo ""
+        echo "Continuing with VM start..."
+        echo ""
     fi
-    echo "  Golden image OK"
+    echo "  Base image OK"
 
     # Check if overlay already exists (VM might already be running)
     local pid_file="/run/shm/winvm-${name}.pid"
@@ -157,13 +159,13 @@ cmd_destroy() {
     require_root
 
     echo "Destroying Windows VM 'winvm-${name}'..."
-    echo "  This will delete the overlay (golden image is preserved)"
+    echo "  This will delete the overlay (base image is preserved)"
     echo ""
 
     windows_vm_destroy "$name"
 
     echo ""
-    echo "VM 'winvm-${name}' destroyed (golden image untouched)"
+    echo "VM 'winvm-${name}' destroyed (base image untouched)"
 }
 
 cmd_ssh() {
@@ -218,68 +220,72 @@ cmd_list() {
     fi
 }
 
-# ─── Golden Image ─────────────────────────────────────────────────────
+# ─── Base Image ───────────────────────────────────────────────────────
 
-cmd_golden_status() {
+cmd_image_status() {
     echo ""
-    windows_golden_status
+    windows_base_image_status
     echo ""
-    if windows_golden_exists; then
-        echo "Golden image is ready."
+    if windows_base_image_exists; then
+        echo "Base image is ready."
     else
-        echo "Golden image not found."
-        echo "  Run: sudo ./winvm.sh golden build"
+        echo "Base image not found."
+        echo "  Run: sudo ./winvm.sh image build"
     fi
 }
 
-cmd_golden_destroy() {
+cmd_image_destroy() {
     require_root
 
-    if ! windows_golden_exists; then
-        echo "Golden image not found (nothing to destroy)"
+    if ! windows_base_image_exists; then
+        echo "Base image not found (nothing to destroy)"
         return 0
     fi
 
-    echo "This will permanently delete the golden image:"
-    echo "  $GOLDEN_WINDOWS_DISK"
-    echo "  $GOLDEN_WINDOWS_VARS"
-    echo "  $GOLDEN_WINDOWS_ROM"
+    echo "This will permanently delete the base image:"
+    echo "  $BASE_WINDOWS_DISK"
+    echo "  $BASE_WINDOWS_VARS"
+    echo "  $BASE_WINDOWS_ROM"
     echo ""
-    read -p "Type 'golden' to confirm: " confirm
+    read -p "Type 'destroy' to confirm: " confirm
 
-    if [[ "$confirm" != "golden" ]]; then
+    if [[ "$confirm" != "destroy" ]]; then
         echo "Cancelled"
         return 1
     fi
 
-    rm -f "$GOLDEN_WINDOWS_DISK" "$GOLDEN_WINDOWS_VARS" "$GOLDEN_WINDOWS_ROM"
-    echo "Golden image destroyed"
+    rm -f "$BASE_WINDOWS_DISK" "$BASE_WINDOWS_VARS" "$BASE_WINDOWS_ROM"
+    echo "Base image destroyed"
 }
 
-cmd_golden_build() {
+cmd_image_build() {
     require_root
 
     local iso_file="${STORAGE_DIR}/win11arm64.iso"
-    local build_disk="${STORAGE_DIR}/golden-build-windows.img"
-    local build_vars="${STORAGE_DIR}/golden-build-windows.vars"
-    local build_rom="${STORAGE_DIR}/golden-build-windows.rom"
-    local build_pid="/run/shm/golden-build-windows.pid"
-    local build_log="/run/shm/golden-build-windows.log"
-    local build_tap="tap-win-golden"
+    local virtio_iso="${STORAGE_DIR}/virtio-win.iso"
+    local build_iso="${STORAGE_DIR}/win11arm64-noprompt.iso"
+    local build_disk="${STORAGE_DIR}/base-build-windows.img"
+    local build_vars="${STORAGE_DIR}/base-build-windows.vars"
+    local build_rom="${STORAGE_DIR}/base-build-windows.rom"
+    local build_pid="/run/shm/base-build-windows.pid"
+    local build_log="/run/shm/base-build-windows.log"
+    local build_tap="tap-win-build"
     local build_vnc=":9"
     local build_vnc_ws="5709"
     local build_monitor="7199"
     local build_mac="02:aa:bb:cc:dd:ee"
+    local build_timeout=10800  # 3h soft cap; we warn but do not kill
+    local stall_threshold=600  # warn if build disk unchanged for 10 min
 
     echo ""
-    echo "Windows Golden Image Builder"
+    echo "Windows Base Image Builder (unattended)"
     echo "======================================================="
     echo ""
 
-    # Check for existing golden image
-    if windows_golden_exists; then
-        echo "Golden image already exists at $GOLDEN_DIR"
-        echo "  To rebuild, first run: sudo ./winvm.sh golden destroy"
+    # Check for existing base image
+    if windows_base_image_exists; then
+        echo "Base image already exists at $BASE_IMAGE_DIR"
+        echo "  To rebuild, first run: sudo ./winvm.sh image destroy"
         exit 1
     fi
 
@@ -296,11 +302,29 @@ cmd_golden_build() {
         exit 1
     fi
 
-    echo "ISO found: $iso_file"
+    # Check for VirtIO drivers ISO
+    if [[ ! -f "$virtio_iso" ]]; then
+        echo "VirtIO drivers ISO not found at: $virtio_iso"
+        echo ""
+        echo "Download from:"
+        echo "  https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
+        exit 1
+    fi
+
+    echo "  Windows ISO:  $iso_file"
+    echo "  VirtIO ISO:   $virtio_iso"
     echo ""
 
-    # Create golden directory
-    mkdir -p "$GOLDEN_DIR"
+    # Create base image directory
+    mkdir -p "$BASE_IMAGE_DIR"
+
+    # Build modified ISO (no "Press any key" prompt, autounattend.xml bundled)
+    if [[ ! -f "$build_iso" ]]; then
+        echo "Building no-prompt Windows ISO..."
+        create_noprompt_iso "$iso_file" "$build_iso"
+    else
+        echo "  Using existing no-prompt ISO: $build_iso"
+    fi
 
     # Create build disk (raw, 64G)
     echo "Creating 64G build disk..."
@@ -323,7 +347,7 @@ cmd_golden_build() {
     ensure_forward_rules "$BRIDGE_NAME" "$upstream"
 
     echo ""
-    echo "Starting QEMU with Windows ISO..."
+    echo "Starting unattended Windows install..."
     echo ""
 
     qemu-system-aarch64 \
@@ -340,15 +364,17 @@ cmd_golden_build() {
         -daemonize \
         -D "$build_log" \
         -pidfile "$build_pid" \
-        -name "golden-build-windows" \
+        -name "base-build-windows" \
         -serial pty \
         -device "qemu-xhci" \
         -device usb-kbd \
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
-        -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -drive "file=${build_iso},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=cdrom0,bootindex=0,removable=on" \
+        -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -device "usb-storage,drive=virtio0,removable=on" \
         -object "iothread,id=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
@@ -369,77 +395,112 @@ cmd_golden_build() {
     local pid
     pid=$(cat "$build_pid")
 
-    cat << 'INSTRUCTIONS'
-=======================================================
-QEMU is running. Connect via VNC to complete installation.
+    local screen_ppm="/tmp/winbuild-latest.ppm"
 
-  VNC:     localhost:9 (port 5909)
-  Monitor: telnet localhost 7199
+    echo "  QEMU started (PID: $pid)"
+    echo ""
+    echo "Watch progress:"
+    echo "  Latest screen:  feh $screen_ppm      (auto-updates every 60s)"
+    echo "  VNC viewer:     vncviewer localhost${build_vnc}"
+    echo "  Manual control: telnet localhost ${build_monitor}"
+    echo "  Force stop:     echo quit | nc -q1 localhost ${build_monitor}"
+    echo ""
+    echo "Waiting for unattended install to complete..."
+    echo "  Soft cap: ${build_timeout}s (advisory only — VM will not be killed)"
+    echo "  The VM shuts itself down when FirstLogonCommands finish."
+    echo ""
+    printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 
-Installation steps:
-  1. Connect to VNC and install Windows 11
-  2. After install completes and you reach the desktop,
-     open PowerShell as Administrator and run:
+    # Wait for VM to shut down (autounattend issues shutdown /s after setup).
+    # No hard kill: timeouts are advisory. If the install is taking too long,
+    # we warn but keep the VM alive so the user can inspect and decide.
+    # Sparse-aware allocated-bytes helper (returns 0 on error)
+    _disk_allocated_bytes() {
+        du --block-size=1 "$1" 2>/dev/null | cut -f1
+    }
 
-     # Enable OpenSSH Server
-     Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
-     Start-Service sshd
-     Set-Service sshd -StartupType Automatic
+    local elapsed=0
+    local soft_timeout_warned=0
+    local last_disk_mtime
+    last_disk_mtime=$(stat -c %Y "$build_disk" 2>/dev/null || echo 0)
+    local last_disk_change=0
+    local last_disk_bytes
+    last_disk_bytes=$(_disk_allocated_bytes "$build_disk")
+    local start_disk_bytes=$last_disk_bytes
+    while kill -0 "$pid" 2>/dev/null; do
+        local now_disk_mtime now_disk_bytes
+        now_disk_mtime=$(stat -c %Y "$build_disk" 2>/dev/null || echo 0)
+        now_disk_bytes=$(_disk_allocated_bytes "$build_disk")
 
-     # Create test user with known password
-     $pw = ConvertTo-SecureString 'TestPass123!' -AsPlainText -Force
-     New-LocalUser -Name testuser -Password $pw -FullName 'Test User'
-     Add-LocalGroupMember -Group Administrators -Member testuser
-
-     # Configure network (static IP for bridge)
-     New-NetIPAddress -InterfaceAlias 'Ethernet' -IPAddress 192.168.50.200 -PrefixLength 24 -DefaultGateway 192.168.50.1
-     Set-DnsClientServerAddress -InterfaceAlias 'Ethernet' -ServerAddresses 8.8.8.8
-
-     # Install Tailscale
-     winget install --id Tailscale.Tailscale --accept-source-agreements --accept-package-agreements --silent
-
-  3. Shut down Windows cleanly: Start -> Power -> Shut down
-
-=======================================================
-Waiting for QEMU process to exit (or press Enter to finalize)...
-INSTRUCTIONS
-
-    # Wait for VM to shut down or user to press Enter
-    while true; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            echo "QEMU process exited."
-            break
+        if [[ "$now_disk_mtime" != "$last_disk_mtime" ]]; then
+            last_disk_mtime="$now_disk_mtime"
+            last_disk_change=$elapsed
         fi
-        if read -t 5 -r; then
-            # User pressed Enter — check if VM is still running
-            if kill -0 "$pid" 2>/dev/null; then
-                echo "VM is still running. Sending ACPI shutdown..."
-                echo "system_powerdown" | nc -q1 localhost "$build_monitor" 2>/dev/null || true
-                echo "Waiting up to 60s for shutdown..."
-                for i in {1..60}; do
-                    if ! kill -0 "$pid" 2>/dev/null; then
-                        echo "VM shut down."
-                        break 2
-                    fi
-                    sleep 1
-                done
-                echo "Forcing quit..."
-                echo "quit" | nc -q1 localhost "$build_monitor" 2>/dev/null || kill "$pid" 2>/dev/null || true
-                sleep 2
+        local since_change=$(( elapsed - last_disk_change ))
+
+        # Advisory soft timeout — warn once, do not kill
+        if (( elapsed >= build_timeout && soft_timeout_warned == 0 )); then
+            echo ""
+            echo "  [!] Build has been running ${elapsed}s (>${build_timeout}s soft cap)."
+            echo "      VM is NOT being killed. Inspect via VNC: localhost${build_vnc}"
+            echo "      Force stop: echo quit | nc -q1 localhost ${build_monitor}"
+            echo ""
+            soft_timeout_warned=1
+        fi
+
+        # Screendump every 60s via QEMU monitor. Silently ignore failures.
+        if (( elapsed > 0 && elapsed % 60 == 0 )); then
+            echo "screendump ${screen_ppm}.tmp" | nc -q1 localhost "$build_monitor" \
+                >/dev/null 2>&1 && mv -f "${screen_ppm}.tmp" "$screen_ppm" 2>/dev/null || true
+        fi
+
+        # Progress line every 30s
+        if (( elapsed % 30 == 0 && elapsed > 0 )); then
+            local delta_bytes=$(( now_disk_bytes - last_disk_bytes ))
+            local written_bytes=$(( now_disk_bytes - start_disk_bytes ))
+            local rate_bps=$(( delta_bytes / 30 ))
+            local disk_h written_h rate_h phase
+            disk_h=$(numfmt --to=iec --suffix=B "$now_disk_bytes" 2>/dev/null || echo "?")
+            written_h=$(numfmt --to=iec --suffix=B "$written_bytes" 2>/dev/null || echo "?")
+            rate_h=$(numfmt --to=iec --suffix=B/s "$rate_bps" 2>/dev/null || echo "?")
+
+            # Phase heuristic from elapsed + rate + stall
+            if (( elapsed < 60 )); then
+                phase="uefi-boot"
+            elif (( since_change >= stall_threshold )); then
+                phase="STALLED (no writes ${since_change}s)"
+            elif (( written_bytes < 200*1024*1024 )); then
+                phase="setup-loading"
+            elif (( rate_bps > 1024*1024 )); then
+                phase="image-extraction"
+            elif (( rate_bps > 0 )); then
+                phase="installing-windows"
+            else
+                phase="reboot-or-config"
             fi
-            break
+
+            printf "  %-8s  %-10s  %-12s  %-10s  %s\n" \
+                "$(printf '%dm%02ds' $((elapsed/60)) $((elapsed%60)))" \
+                "$disk_h" "$written_h" "$rate_h" "$phase"
+
+            last_disk_bytes=$now_disk_bytes
         fi
+        sleep 5
+        elapsed=$((elapsed + 5))
     done
+
+    echo ""
+    echo "  VM shut down after $((elapsed / 60))m $((elapsed % 60))s"
 
     rm -f "$build_pid"
 
     echo ""
     echo "Converting raw disk to compressed qcow2..."
-    qemu-img convert -f raw -O qcow2 -c "$build_disk" "$GOLDEN_WINDOWS_DISK"
+    qemu-img convert -f raw -O qcow2 -c "$build_disk" "$BASE_WINDOWS_DISK"
 
-    echo "Copying UEFI files to golden directory..."
-    cp "$build_vars" "$GOLDEN_WINDOWS_VARS"
-    cp "$build_rom" "$GOLDEN_WINDOWS_ROM"
+    echo "Copying UEFI files to base image directory..."
+    cp "$build_vars" "$BASE_WINDOWS_VARS"
+    cp "$build_rom" "$BASE_WINDOWS_ROM"
 
     echo "Cleaning up build files..."
     rm -f "$build_disk" "$build_vars" "$build_rom" "$build_log"
@@ -452,13 +513,13 @@ INSTRUCTIONS
 
     echo ""
     echo "======================================================="
-    echo "Golden image ready at $GOLDEN_DIR"
+    echo "Base image ready at $BASE_IMAGE_DIR"
     echo ""
-    local golden_size
-    golden_size=$(du -h "$GOLDEN_WINDOWS_DISK" 2>/dev/null | cut -f1)
-    echo "  Disk:  $GOLDEN_WINDOWS_DISK ($golden_size)"
-    echo "  Vars:  $GOLDEN_WINDOWS_VARS"
-    echo "  ROM:   $GOLDEN_WINDOWS_ROM"
+    local base_size
+    base_size=$(du -h "$BASE_WINDOWS_DISK" 2>/dev/null | cut -f1)
+    echo "  Disk:  $BASE_WINDOWS_DISK ($base_size)"
+    echo "  Vars:  $BASE_WINDOWS_VARS"
+    echo "  ROM:   $BASE_WINDOWS_ROM"
     echo ""
     echo "Create VMs with:"
     echo "  sudo ./winvm.sh start <name>"
@@ -513,15 +574,15 @@ main() {
         list)
             cmd_list
             ;;
-        golden)
-            [[ $# -lt 1 ]] && { echo "Error: golden subcommand required (build|status|destroy)"; exit 1; }
+        image)
+            [[ $# -lt 1 ]] && { echo "Error: image subcommand required (build|status|destroy)"; exit 1; }
             local subcmd="$1"
             shift
             case "$subcmd" in
-                build)   cmd_golden_build ;;
-                status)  cmd_golden_status ;;
-                destroy) cmd_golden_destroy ;;
-                *)       echo "Unknown golden subcommand: $subcmd"; exit 1 ;;
+                build)   cmd_image_build ;;
+                status)  cmd_image_status ;;
+                destroy) cmd_image_destroy ;;
+                *)       echo "Unknown image subcommand: $subcmd"; exit 1 ;;
             esac
             ;;
         *)

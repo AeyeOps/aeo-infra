@@ -42,24 +42,21 @@ sudo ./start-ubuntu-vm.sh
 sudo ./stop-ubuntu-vm.sh
 ```
 
-## Windows VMs (Golden Image + Overlay)
+## Windows VMs (Base Image + Overlay)
 
-Windows VMs use a golden image pattern: build once, spin up disposable instances instantly via copy-on-write overlays. Managed by `winvm.sh`.
+Windows VMs use a base image pattern: build once, spin up disposable instances instantly via copy-on-write overlays. Managed by `winvm.sh`.
 
 ### Quick Start
 
 ```bash
-# One-time: build the golden image (interactive Windows install via VNC)
-sudo ./winvm.sh golden build
-
-# Spin up a Windows VM (instant overlay creation)
+# Spin up a Windows VM (auto-builds base image if needed)
 sudo ./winvm.sh start meshtest
 
 # Use it
 ./winvm.sh ssh meshtest
 ./winvm.sh exec meshtest "hostname"
 
-# Tear down (overlay deleted, golden image untouched)
+# Tear down (overlay deleted, base image untouched)
 sudo ./winvm.sh destroy meshtest
 ```
 
@@ -67,26 +64,26 @@ sudo ./winvm.sh destroy meshtest
 
 | Command | Description |
 |---------|-------------|
-| `winvm.sh start <name>` | Create overlay + boot from golden image |
+| `winvm.sh start <name>` | Create overlay + boot (auto-builds base image if needed) |
 | `winvm.sh stop <name>` | Graceful ACPI shutdown |
 | `winvm.sh destroy <name>` | Stop + delete overlay files |
 | `winvm.sh ssh <name>` | Connect via SSH |
 | `winvm.sh exec <name> <cmd>` | Run command on VM |
 | `winvm.sh status <name>` | Check VM state |
 | `winvm.sh list` | List running Windows VMs |
-| `winvm.sh golden build` | Build golden image (one-time) |
-| `winvm.sh golden status` | Check golden image |
-| `winvm.sh golden destroy` | Remove golden image |
+| `winvm.sh image build` | Build base image (one-time) |
+| `winvm.sh image status` | Check base image |
+| `winvm.sh image destroy` | Remove base image |
 
-### Golden Image
+### Base Image
 
-Pre-installed in the golden image:
+Pre-installed in the base image:
 - Windows 11 ARM64 with OpenSSH Server
 - `testuser` account (password: `TestPass123!`, admin)
 - Static IP `192.168.50.200/24`, gateway `192.168.50.1`
 - Tailscale client
 
-See `golden/README.md` for build details.
+See `base-images/README.md` for build details.
 
 ### Legacy Scripts
 

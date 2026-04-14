@@ -33,6 +33,16 @@ Thumbs.db
 # Logs
 *.log
 
+# VM images (ISOs, disk images, build artifacts)
+vms/.images/
+
+# Local Claude Code tooling (per-worktree plugins/settings, not project state)
+.claude/
+mesh/.claude/
+
+# vLLM moved to dedicated repo steveant/aeo-vllm-gb10 (see commit 565e878)
+vLLM/
+
 # Environment (keep .env.example, exclude actual .env)
 .env
 .env.local
