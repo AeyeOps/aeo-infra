@@ -425,6 +425,8 @@ cmd_image_build() {
 
     local elapsed=0
     local soft_timeout_warned=0
+    local iso_ejected=0
+    local peak_disk_bytes=0
     local last_disk_mtime
     last_disk_mtime=$(stat -c %Y "$build_disk" 2>/dev/null || echo 0)
     local last_disk_change=0
@@ -441,6 +443,23 @@ cmd_image_build() {
             last_disk_change=$elapsed
         fi
         local since_change=$(( elapsed - last_disk_change ))
+
+        # Track peak disk allocation
+        if (( now_disk_bytes > peak_disk_bytes )); then
+            peak_disk_bytes=$now_disk_bytes
+        fi
+
+        # Eject Windows ISO after first reboot to prevent reinstall loop.
+        # Detect first reboot: disk grew past 4GB (image extraction happened),
+        # then dropped below 2GB (reboot + sparse reclaim). Eject once.
+        if (( iso_ejected == 0 && elapsed > 120 && peak_disk_bytes > 4*1024*1024*1024 && now_disk_bytes < 2*1024*1024*1024 )); then
+            echo ""
+            echo "  [*] First reboot detected — ejecting Windows ISO to prevent reinstall loop"
+            echo "eject cdrom0" | nc -q1 localhost "$build_monitor" >/dev/null 2>&1 || true
+            iso_ejected=1
+            echo "  [*] ISO ejected. Subsequent boots will use the installed disk."
+            echo ""
+        fi
 
         # Advisory soft timeout — warn once, do not kill
         if (( elapsed >= build_timeout && soft_timeout_warned == 0 )); then
