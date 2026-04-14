@@ -143,6 +143,36 @@ def setup(
         error("Failed to connect to mesh network")
         raise typer.Exit(1)
 
+    # Check and offer logtail suppression
+    import tempfile
+    from pathlib import Path
+
+    from mesh.core.privacy import check_logtail_suppression
+
+    logtail = check_logtail_suppression()
+    if not logtail.suppressed:
+        section("Privacy Hardening")
+        warn("Logtail suppression is not deployed on this node")
+        info("This means Tailscale may send startup logs to public infrastructure")
+        if typer.confirm("Deploy logtail suppression now?", default=True):
+            from mesh.core.templates import get_template
+
+            template_content = get_template("tailscaled.default.private")
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
+                f.write(template_content)
+                tmp_path = f.name
+            result = run_sudo(["cp", tmp_path, "/etc/default/tailscaled"])
+            Path(tmp_path).unlink(missing_ok=True)
+            if result.success:
+                ok("Logtail suppression deployed to /etc/default/tailscaled")
+                info("Restarting tailscaled...")
+                run_sudo(["systemctl", "restart", "tailscaled"])
+            else:
+                warn("Could not deploy logtail suppression")
+                info("Run 'mesh harden client' to deploy manually")
+    else:
+        ok("Logtail suppression: already deployed")
+
     # Install Syncthing
     if command_exists("syncthing"):
         ok("Syncthing is already installed")

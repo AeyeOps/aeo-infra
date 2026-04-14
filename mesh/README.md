@@ -64,6 +64,52 @@ mesh smb setup-client --host windows --server sfspark1 --user steve  # Generate 
 mesh smb status                                     # Check Samba services and shares
 ```
 
+## Security Hardening
+
+The mesh CLI includes privacy hardening features based on a comprehensive architecture investigation. A vanilla Headscale + Tailscale deployment leaves gaps that need explicit hardening.
+
+### Quick Start
+
+```bash
+# Check current hardening state
+uv run mesh harden status
+
+# Deploy logtail suppression on current node
+uv run mesh harden client
+
+# Deploy hardened Headscale config (server only)
+uv run mesh harden server
+
+# Deploy logtail suppression on a remote node
+uv run mesh harden remote user@hostname
+
+# List available templates
+uv run mesh harden show-templates
+```
+
+### What Gets Hardened
+
+| Area | What | Why |
+|------|------|-----|
+| DERP Privacy | Embedded private DERP, public map removed | Prevents relay metadata through public infrastructure |
+| Logtail | `TS_NO_LOGS_NO_SUPPORT=true` on every node | Stops startup log egress to public logging service |
+| DNS Policy | `override_local_dns: false`, empty global nameservers | Preserves local DNS, avoids VPN coexistence breakage |
+| ACL/SSH | Tag-based least privilege policy | Restricts mesh reachability and SSH access |
+
+The `mesh status` command includes a Security section that reports on these areas.
+
+See `docs/security-hardening.md` for the full guide and `docs/architecture/` for reference diagrams.
+
+### Integration Tests
+
+```bash
+# Run local tests (fast, no Docker)
+make test
+
+# Run integration tests (Docker Compose with real Headscale + Tailscale)
+make integration-test
+```
+
 ## Architecture
 
 ```

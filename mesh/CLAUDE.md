@@ -30,6 +30,33 @@ This directory contains tools for managing a self-hosted mesh network using **He
 - **True bidirectional sync** - Syncthing is peer-to-peer, not client-server
 - **Zero-admin after setup** - Mesh auto-heals, Syncthing auto-reconnects
 
+## Privacy Hardening
+
+The mesh CLI includes privacy hardening based on a production architecture investigation that revealed four areas where a vanilla Headscale/Tailscale deployment is not fully private.
+
+### Hardening Areas
+
+1. **DERP Privacy** — Embedded DERP enabled, public Tailscale DERP map removed
+2. **Logtail Suppression** — `TS_NO_LOGS_NO_SUPPORT=true` on every node
+3. **DNS Policy** — `override_local_dns: false` with empty global nameservers
+4. **ACL/SSH Policy** — Tag-based least privilege
+
+### Key Commands
+
+```bash
+mesh harden status          # Validate hardening state
+mesh harden client          # Deploy logtail suppression locally
+mesh harden server          # Deploy hardened Headscale config
+mesh harden remote <host>   # Deploy logtail suppression via SSH
+mesh harden show-templates  # List available templates
+```
+
+### Templates
+
+Hardening templates are shipped in `src/mesh/templates/` and loaded via `core/templates.py`. They use generic placeholders (`example.com`, `203.0.113.x`) and contain no environment-specific values.
+
+See `docs/security-hardening.md` for the full guide.
+
 ## Configuration
 
 Set these environment variables (or in `../.env`):

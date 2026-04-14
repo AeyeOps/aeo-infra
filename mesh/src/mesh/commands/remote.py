@@ -129,7 +129,7 @@ def provision_linux(host: str, port: int, server_url: str, auth_key: str) -> boo
     info("Connecting to mesh network...")
     ts_cmd = (
         f"sudo tailscale up --login-server={server_url} "
-        f"--authkey={auth_key} --accept-routes --accept-dns=false"
+        f"--authkey={auth_key} --accept-routes --accept-dns=true"
     )
     success, output = ssh_run(host, port, ts_cmd, timeout=60)
     if not success:
@@ -147,6 +147,22 @@ def provision_linux(host: str, port: int, server_url: str, auth_key: str) -> boo
     success, output = ssh_run(host, port, "tailscale ip -4")
     if success:
         info(f"Tailscale IP: {output.strip()}")
+
+    # Deploy logtail suppression
+    info("Deploying logtail suppression...")
+    from mesh.core.templates import get_template
+
+    logtail_content = get_template("tailscaled.default.private")
+    # Write via echo with heredoc to avoid escaping issues
+    deploy_cmd = f"echo '{logtail_content}' | sudo tee /etc/default/tailscaled > /dev/null"
+    success, output = ssh_run(host, port, deploy_cmd)
+    if success:
+        ok("Logtail suppression deployed")
+        # Restart tailscaled to pick up the new config
+        ssh_run(host, port, "sudo systemctl restart tailscaled", timeout=30)
+    else:
+        warn(f"Could not deploy logtail suppression: {output}")
+        info("Run 'mesh harden remote' to deploy manually")
 
     return True
 
@@ -343,6 +359,13 @@ def provision_windows(host: str, port: int, server_url: str, auth_key: str) -> b
         "Set-ItemProperty -Path $regPath -Name 'LoginURL' -Value $ServerUrl",
         "Set-ItemProperty -Path $regPath -Name 'UnattendedMode' -Value 'always'",
         "Log 'Step 2 complete'",
+        "",
+        "# Step 2.5: Deploy logtail suppression",
+        "Write-Host '[2.5/5] Deploying logtail suppression...' -ForegroundColor Yellow",
+        "$envPath = Join-Path $env:ProgramData 'Tailscale\\tailscaled-env.txt'",
+        "Log 'Deploying TS_NO_LOGS_NO_SUPPORT=true'",
+        "'TS_NO_LOGS_NO_SUPPORT=true' | Set-Content -Path $envPath -Force",
+        "Log 'Logtail suppression deployed'",
         "",
         "# Step 3: Start fresh service",
         "Write-Host '[3/5] Starting Tailscale service...' -ForegroundColor Yellow",

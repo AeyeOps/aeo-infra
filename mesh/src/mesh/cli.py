@@ -3,7 +3,20 @@
 import typer
 
 from mesh import __version__
-from mesh.commands import client, host, init, peer, remote, server, smb, status, ubuntu, windows, wsl
+from mesh.commands import (
+    client,
+    harden,
+    host,
+    init,
+    peer,
+    remote,
+    server,
+    smb,
+    status,
+    ubuntu,
+    windows,
+    wsl,
+)
 
 app = typer.Typer(
     name="mesh",
@@ -21,6 +34,7 @@ app.add_typer(windows.app, name="windows")
 app.add_typer(ubuntu.app, name="ubuntu")
 app.add_typer(remote.app, name="remote")
 app.add_typer(smb.app, name="smb")
+app.add_typer(harden.app, name="harden")
 
 
 def version_callback(value: bool) -> None:

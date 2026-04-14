@@ -1,0 +1,24 @@
+%% Ingress and egress traffic flow for a privacy-hardened Headscale mesh.
+%% Shows every network path a client node may use.
+
+flowchart LR
+  user["Client node"]
+  pdns["Public DNS\nHeadscale FQDN"]
+  proxy["Reverse proxy\nTCP 443"]
+  hs["Headscale backend\n127.0.0.1:8080"]
+  derp["Private DERP relay\nTCP 443"]
+  stun["STUN\nUDP 3478"]
+  peer["Peer node"]
+  direct["Direct WireGuard path\nUDP 41641 default"]
+  mdns["MagicDNS / tailnet DNS"]
+  localdns["Local recursive DNS"]
+
+  user --> pdns
+  user --> proxy
+  proxy --> hs
+  user --> stun
+  user --> derp
+  user --> direct
+  direct --> peer
+  user --> mdns
+  user --> localdns

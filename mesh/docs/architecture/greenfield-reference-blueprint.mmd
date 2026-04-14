@@ -1,0 +1,57 @@
+%% Greenfield reference architecture for a privacy-hardened Headscale mesh.
+%% All names, IPs, and domains are illustrative — no real infrastructure.
+
+flowchart TB
+  internet["Internet"]
+
+  subgraph dnszone["Public DNS zone"]
+    publicfqdn["headscale.example.com"]
+  end
+
+  subgraph cloud["Cloud VPC or hosted control plane"]
+    proxy["Reverse proxy\nTLS 443"]
+    hs["Headscale\n127.0.0.1:8080"]
+    derp["Private DERP\nTCP 443\nUDP 3478"]
+    metrics["Metrics\n127.0.0.1:9090"]
+    grpc["gRPC admin\n127.0.0.1:50443"]
+  end
+
+  subgraph office["Corporate office or branch LAN"]
+    win1["Windows workstation"]
+    wsl1["WSL instance"]
+    lin1["Linux workstation or server"]
+  end
+
+  subgraph cloudworkloads["Cloud workloads"]
+    app1["Linux application node"]
+    db1["Restricted service node"]
+  end
+
+  subgraph policy["Identity and policy"]
+    acl["ACL and SSH policy"]
+  end
+
+  subgraph internaldns["Optional private recursive DNS"]
+    recur["Corporate resolver or forwarder"]
+  end
+
+  internet --> publicfqdn
+  publicfqdn --> proxy
+  proxy --> hs
+  proxy --> derp
+  hs --> acl
+  hs --> metrics
+  hs --> grpc
+  hs --> recur
+
+  win1 --> proxy
+  wsl1 --> proxy
+  lin1 --> proxy
+  app1 --> proxy
+  db1 --> proxy
+
+  win1 <--> lin1
+  win1 <--> app1
+  lin1 <--> app1
+  app1 <--> db1
+  wsl1 <--> lin1

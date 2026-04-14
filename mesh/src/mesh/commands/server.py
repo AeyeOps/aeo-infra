@@ -70,6 +70,16 @@ def setup(
 
     ok("Server setup complete")
 
+    # Suggest privacy hardening
+    section("Privacy Hardening")
+    info("For a fully private mesh, consider running:")
+    info("  mesh harden server    — Deploy hardened Headscale config")
+    info("  mesh harden client    — Deploy logtail suppression")
+    info("")
+    info("This configures: private DERP relay, logtail suppression,")
+    info("DNS policy, and loopback-only service bindings.")
+    info("See: mesh harden --help")
+
     # Start mDNS advertisement if requested
     if advertise:
         from mesh.discovery import advertise_server

@@ -4,7 +4,7 @@ import typer
 
 from mesh.core import tailscale
 from mesh.core.config import get_headscale_server, get_syncthing_port
-from mesh.core.environment import detect_os_type, detect_role, get_hostname
+from mesh.core.environment import detect_os_type, detect_role, get_hostname, is_server
 from mesh.core.syncthing import SyncthingClient
 from mesh.utils.output import create_table, error, info, ok, print_table, section, warn
 
@@ -81,6 +81,76 @@ def status(
         info(f"Headscale server: {server}")
     else:
         info("No Headscale server configured")
+
+    # Security hardening checks
+    section("Security")
+    from mesh.core.privacy import (
+        check_derp_map,
+        check_dns_acceptance,
+        check_headscale_config,
+        check_logtail_suppression,
+    )
+
+    # Logtail suppression (always check)
+    logtail = check_logtail_suppression()
+    if logtail.suppressed:
+        ok(f"Logtail suppression: deployed ({logtail.file_path})")
+    elif logtail.error:
+        info(f"Logtail suppression: {logtail.error}")
+    else:
+        warn("Logtail suppression: not deployed")
+        info("  Run 'mesh harden client' to deploy")
+        issues += 1
+
+    # DERP map (only if Tailscale is connected)
+    if tailscale.is_connected():
+        derp = check_derp_map()
+        if derp.error:
+            info(f"DERP map: {derp.error}")
+        elif derp.is_private:
+            ok(f"DERP map: private only ({len(derp.regions)} region(s))")
+            if verbose:
+                for r in derp.regions:
+                    info(f"  Region {r.get('id', '?')}: {r.get('name', 'unknown')}")
+        else:
+            warn(f"DERP map: {len(derp.public_regions)} public region(s) detected")
+            if verbose:
+                for hostname in derp.public_regions:
+                    info(f"  Public: {hostname}")
+            issues += 1
+
+        # DNS acceptance
+        dns = check_dns_acceptance()
+        if dns.error:
+            info(f"DNS acceptance: {dns.error}")
+        elif dns.accept_dns:
+            ok("DNS acceptance: enabled (MagicDNS active)")
+        else:
+            info("DNS acceptance: disabled")
+            if verbose:
+                info("  MagicDNS may not resolve mesh hostnames")
+
+    # Headscale config (server only)
+    if is_server():
+        hs_config = check_headscale_config()
+        if hs_config.error:
+            info(f"Headscale config: {hs_config.error}")
+        elif hs_config.is_hardened:
+            ok("Headscale config: hardened")
+        else:
+            warn("Headscale config: not fully hardened")
+            if verbose:
+                checks = [
+                    ("DERP server enabled", hs_config.derp_server_enabled),
+                    ("Public DERP URLs empty", hs_config.public_derp_urls_empty),
+                    ("Logtail disabled", hs_config.logtail_disabled),
+                    ("DNS override disabled", hs_config.dns_override_disabled),
+                    ("Listen loopback only", hs_config.listen_loopback_only),
+                ]
+                for label, passed in checks:
+                    status_mark = "pass" if passed else "FAIL"
+                    info(f"  [{status_mark}] {label}")
+            issues += 1
 
     # Summary
     section("Summary")

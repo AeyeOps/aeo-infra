@@ -1,0 +1,10 @@
+Component,Direction,Source,Destination,Protocol,Port,Purpose,Required
+Reverse proxy,Inbound,Internet,Headscale public endpoint,TCP,443,Headscale control plane and DERP relay over TLS,Yes
+Reverse proxy,Inbound,Internet,Headscale public endpoint,TCP,80,ACME HTTP-01 or HTTP redirect,Optional
+Embedded DERP STUN,Inbound,Internet,Headscale public endpoint,UDP,3478,STUN and NAT discovery,Yes
+Headscale backend,Inbound,Reverse proxy,127.0.0.1,TCP,8080,Backend application traffic,Yes
+Headscale gRPC,Inbound,Local admin host or loopback,127.0.0.1,TCP,50443,Administrative API,Optional
+Headscale metrics,Inbound,Internal monitoring,127.0.0.1,TCP,9090,Metrics scraping,Optional
+Tailscale client control,Outbound,Clients,Headscale public endpoint,TCP,443,Registration and coordination,Yes
+Tailscale direct mesh,Outbound,Clients,Peers,UDP,41641,Direct WireGuard data plane default port,Yes
+Tailscale SSH,Inbound,Tailnet peers,Managed nodes,TCP,22,Tailscale SSH on tailnet IPs only,Optional

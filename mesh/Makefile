@@ -1,4 +1,4 @@
-.PHONY: validate build clean distclean
+.PHONY: validate test integration-test build clean distclean
 
 # Run all code quality checks
 validate:
@@ -6,6 +6,14 @@ validate:
 	uv run ruff check --fix src/
 	uv run ruff check src/
 	uvx ty check src/
+
+# Run local tests (excludes integration tests)
+test: validate
+	uv run pytest tests/ -v --ignore=tests/integration
+
+# Run Docker Compose integration tests
+integration-test:
+	./tests/integration/run-tests.sh
 
 # Build standalone binary with PyInstaller and install to /usr/local/bin
 # Uses persisted spec file if exists, otherwise generates new one
@@ -30,11 +38,14 @@ build: validate
 			--hidden-import mesh.commands.remote \
 			--hidden-import mesh.commands.init \
 			--hidden-import mesh.commands.host \
+			--hidden-import mesh.commands.harden \
 			--hidden-import mesh.core.environment \
 			--hidden-import mesh.core.config \
 			--hidden-import mesh.core.syncthing \
 			--hidden-import mesh.core.headscale \
 			--hidden-import mesh.core.tailscale \
+			--hidden-import mesh.core.privacy \
+			--hidden-import mesh.core.templates \
 			--hidden-import mesh.utils.output \
 			--hidden-import mesh.utils.process \
 			--hidden-import mesh.utils.ssh \

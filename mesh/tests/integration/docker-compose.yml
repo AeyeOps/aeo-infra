@@ -1,0 +1,78 @@
+services:
+  headscale:
+    image: headscale/headscale:0.27.1
+    container_name: meshtest-headscale
+    hostname: headscale
+    command: serve
+    volumes:
+      - ./headscale/config.yaml:/etc/headscale/config.yaml:ro
+      - ./headscale/derp.yaml:/etc/headscale/derp.yaml:ro
+      - ./headscale/acl.yaml:/etc/headscale/acl.yaml:ro
+      - headscale-data:/var/lib/headscale
+    networks:
+      meshtest:
+        ipv4_address: 172.30.0.10
+    healthcheck:
+      test: ["CMD", "headscale", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  client-a:
+    image: tailscale/tailscale:latest
+    container_name: meshtest-client-a
+    hostname: client-a
+    entrypoint: []
+    command:
+      - tailscaled
+      - --state=/var/lib/tailscale/tailscaled.state
+      - --socket=/var/run/tailscale/tailscaled.sock
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - client-a-state:/var/lib/tailscale
+    networks:
+      meshtest:
+        ipv4_address: 172.30.0.11
+    depends_on:
+      headscale:
+        condition: service_healthy
+
+  client-b:
+    image: tailscale/tailscale:latest
+    container_name: meshtest-client-b
+    hostname: client-b
+    entrypoint: []
+    command:
+      - tailscaled
+      - --state=/var/lib/tailscale/tailscaled.state
+      - --socket=/var/run/tailscale/tailscaled.sock
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - client-b-state:/var/lib/tailscale
+    networks:
+      meshtest:
+        ipv4_address: 172.30.0.12
+    depends_on:
+      headscale:
+        condition: service_healthy
+
+networks:
+  meshtest:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  headscale-data:
+  client-a-state:
+  client-b-state:

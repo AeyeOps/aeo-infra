@@ -1,0 +1,1 @@
+TS_NO_LOGS_NO_SUPPORT=true

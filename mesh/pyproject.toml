@@ -1,7 +1,7 @@
 [project]
 name = "mesh"
-version = "0.5.0"
-description = "Mesh network setup tools (Headscale + Syncthing)"
+version = "0.6.0"
+description = "Mesh network setup and privacy hardening tools (Headscale + Syncthing)"
 requires-python = ">=3.13"
 dependencies = [
     "typer>=0.15",

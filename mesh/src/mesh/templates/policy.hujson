@@ -1,0 +1,59 @@
+{
+  "groups": {
+    "group:netops": [
+      "alice@example.com"
+    ],
+    "group:platform": [
+      "bob@example.com"
+    ]
+  },
+  "tagOwners": {
+    "tag:server": [
+      "group:platform"
+    ],
+    "tag:workstation": [
+      "group:netops"
+    ],
+    "tag:infra": [
+      "group:platform"
+    ]
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": [
+        "group:netops"
+      ],
+      "dst": [
+        "tag:workstation:*"
+      ]
+    },
+    {
+      "action": "accept",
+      "src": [
+        "group:platform"
+      ],
+      "dst": [
+        "tag:server:*",
+        "tag:infra:*"
+      ]
+    }
+  ],
+  "ssh": [
+    {
+      "action": "accept",
+      "src": [
+        "group:netops",
+        "group:platform"
+      ],
+      "dst": [
+        "tag:server",
+        "tag:infra"
+      ],
+      "users": [
+        "autogroup:nonroot",
+        "root"
+      ]
+    }
+  ]
+}

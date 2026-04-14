@@ -1,0 +1,5 @@
+# Deploy as /etc/default/tailscaled on Linux and WSL nodes.
+
+PORT="41641"
+TS_NO_LOGS_NO_SUPPORT=true
+FLAGS=""

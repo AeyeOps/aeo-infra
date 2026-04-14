@@ -45,19 +45,19 @@ def get_ip() -> str | None:
     return None
 
 
-def up(login_server: str, auth_key: str) -> bool:
+def up(login_server: str, auth_key: str, accept_dns: bool = True) -> bool:
     """Connect to Tailscale with auth key."""
-    result = run(
-        [
-            "tailscale",
-            "up",
-            "--login-server",
-            login_server,
-            "--auth-key",
-            auth_key,
-            "--accept-routes",
-        ]
-    )
+    cmd = [
+        "tailscale",
+        "up",
+        "--login-server",
+        login_server,
+        "--auth-key",
+        auth_key,
+        "--accept-routes",
+        f"--accept-dns={'true' if accept_dns else 'false'}",
+    ]
+    result = run(cmd)
     return result.success
 
 
