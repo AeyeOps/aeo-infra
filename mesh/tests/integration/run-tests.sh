@@ -16,16 +16,6 @@ WINVM_NAME="meshtest-win"
 WINVM_IP="192.168.50.200"
 WINVM_USER="testuser"
 
-# Preflight: verify golden image exists
-if ! "$WINVM_SH" golden status 2>&1 | grep -q "Golden image ready"; then
-    echo "FAIL: Windows golden image not found"
-    echo ""
-    "$WINVM_SH" golden status
-    echo ""
-    echo "Build one first: sudo $WINVM_SH golden build"
-    exit 1
-fi
-
 cleanup() {
     echo "--- Tearing down ---"
     echo "  Stopping Windows VM..."
@@ -71,7 +61,7 @@ echo "=== Starting Linux clients ==="
 docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d client-a client-b
 sleep 3
 
-# Phase 4: Start Windows VM
+# Phase 4: Start Windows VM (auto-builds base image if needed)
 echo "=== Starting Windows VM ==="
 sudo "$WINVM_SH" start "$WINVM_NAME" --ip "$WINVM_IP"
 

@@ -57,6 +57,17 @@ Hardening templates are shipped in `src/mesh/templates/` and loaded via `core/te
 
 See `docs/security-hardening.md` for the full guide.
 
+## Testing
+
+```bash
+make test                # Local tests (template validation, CLI smoke, PII scrub)
+make integration-test    # Full heterogeneous mesh (Docker + QEMU Windows VM)
+```
+
+- No mock-based subprocess tests — test real data (YAML parses, content assertions) not mocked calls
+- One integration test suite for all platforms (Linux + Windows) — no optional flags or per-platform splits
+- PII markers that must never appear in templates or configs: `aeyeops`, `sfspark`, `aurora`, `srv1540558`, `xps13`, `100.64.0.`
+
 ## Configuration
 
 Set these environment variables (or in `../.env`):
