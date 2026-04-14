@@ -1,4 +1,10 @@
-"""Integration tests for mesh CLI against real Headscale + Tailscale."""
+"""Integration tests for mesh CLI against a real heterogeneous mesh.
+
+Tests a complete mesh: Headscale control plane + Linux Tailscale clients (Docker)
++ optionally a Windows Tailscale client (QEMU overlay VM). One mesh, one test suite.
+
+Run via: ./tests/integration/run-tests.sh
+"""
 
 import json
 from pathlib import Path
@@ -28,6 +34,13 @@ class TestHeadscaleHealth:
         hostnames = [n.get("givenName", n.get("name", "")) for n in nodes]
         assert "client-a" in hostnames
         assert "client-b" in hostnames
+
+    def test_windows_node_registered(self, headscale_exec):
+        result = headscale_exec(["headscale", "nodes", "list", "-o", "json"])
+        assert result.returncode == 0
+        nodes = json.loads(result.stdout)
+        hostnames = [n.get("givenName", n.get("name", "")).lower() for n in nodes]
+        assert "windows-test" in hostnames, f"Windows node not in Headscale. Nodes: {hostnames}"
 
 
 class TestClientMesh:
@@ -160,3 +173,49 @@ class TestTemplatePIIScrub:
             assert pattern.lower().strip() not in content, (
                 f"PII pattern '{pattern}' found in ACL policy"
             )
+
+
+# --- Cross-platform mesh tests (Windows + Linux) ---
+
+
+class TestCrossPlatformMesh:
+    """Verify Windows and Linux nodes can see and reach each other."""
+
+    def test_linux_sees_windows_peer(self, client_a_exec):
+        result = client_a_exec(["tailscale", "status", "--json"])
+        assert result.returncode == 0
+        status = json.loads(result.stdout)
+        peer_hosts = [p.get("HostName", "").lower() for p in status.get("Peer", {}).values()]
+        assert "windows-test" in peer_hosts, f"Windows not visible from Linux. Peers: {peer_hosts}"
+
+    def test_linux_pings_windows(self, client_a_exec):
+        result = client_a_exec(
+            ["tailscale", "ping", "-c", "1", "windows-test"],
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Linux→Windows ping failed: {result.stderr}"
+
+    def test_windows_sees_linux_peers(self, winvm_exec):
+        result = winvm_exec(
+            '& "C:\\Program Files\\Tailscale\\tailscale.exe" status --json'
+        )
+        assert result.returncode == 0, f"tailscale status failed: {result.stderr}"
+        status = json.loads(result.stdout)
+        peer_hosts = [p.get("HostName", "").lower() for p in status.get("Peer", {}).values()]
+        assert "client-a" in peer_hosts, f"Linux not visible from Windows. Peers: {peer_hosts}"
+
+    def test_windows_tailscale_running(self, winvm_exec):
+        result = winvm_exec(
+            '& "C:\\Program Files\\Tailscale\\tailscale.exe" status --json'
+        )
+        assert result.returncode == 0
+        status = json.loads(result.stdout)
+        assert status.get("BackendState") == "Running"
+
+    def test_windows_has_tailscale_ip(self, winvm_exec):
+        result = winvm_exec(
+            '& "C:\\Program Files\\Tailscale\\tailscale.exe" ip -4'
+        )
+        assert result.returncode == 0
+        ip = result.stdout.strip()
+        assert ip.startswith("100.64."), f"Unexpected Tailscale IP: {ip}"

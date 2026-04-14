@@ -1,4 +1,10 @@
-"""Fixtures for mesh integration tests."""
+"""Fixtures for mesh integration tests.
+
+Provides helpers for all three node types in the heterogeneous mesh:
+- Headscale control plane (Docker)
+- Linux Tailscale clients (Docker)
+- Windows Tailscale client (QEMU overlay VM)
+"""
 
 import json
 import os
@@ -23,42 +29,61 @@ def docker_exec(
     )
 
 
+def ssh_exec(
+    ip: str, cmd: str, *, user: str = "testuser", timeout: int = 30
+) -> subprocess.CompletedProcess:
+    """Run a command on a remote host via SSH."""
+    return subprocess.run(
+        [
+            "ssh",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=accept-new",
+            f"{user}@{ip}",
+            cmd,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+# --- Headscale fixtures ---
+
+
 @pytest.fixture(scope="session")
 def authkey():
     """The preauth key created by run-tests.sh, passed via env."""
     key = os.environ.get("AUTHKEY")
     if not key:
-        pytest.skip("AUTHKEY not set — run via run-tests.sh")
+        pytest.fail("AUTHKEY not set — run via run-tests.sh")
     return key
 
 
 @pytest.fixture(scope="session")
 def headscale_exec():
     """Helper to exec commands in the Headscale container."""
-
     def _exec(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
         return docker_exec(HEADSCALE_CONTAINER, cmd, **kwargs)
-
     return _exec
+
+
+# --- Linux client fixtures ---
 
 
 @pytest.fixture(scope="session")
 def client_a_exec():
     """Helper to exec commands in client-a container."""
-
     def _exec(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
         return docker_exec(CLIENT_A_CONTAINER, cmd, **kwargs)
-
     return _exec
 
 
 @pytest.fixture(scope="session")
 def client_b_exec():
     """Helper to exec commands in client-b container."""
-
     def _exec(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
         return docker_exec(CLIENT_B_CONTAINER, cmd, **kwargs)
-
     return _exec
 
 
@@ -81,31 +106,6 @@ def client_b_status(client_b_exec):
 # --- Windows VM fixtures ---
 
 
-def ssh_exec(
-    ip: str, cmd: str, *, user: str = "testuser", timeout: int = 30
-) -> subprocess.CompletedProcess:
-    """Run a command on a remote host via SSH."""
-    return subprocess.run(
-        [
-            "ssh",
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=accept-new",
-            f"{user}@{ip}",
-            cmd,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-
-@pytest.fixture(scope="session")
-def windows_ready():
-    """Whether the Windows VM is available for testing."""
-    return os.environ.get("WINDOWS_READY") == "1"
-
-
 @pytest.fixture(scope="session")
 def winvm_ip():
     """Windows VM IP address."""
@@ -119,12 +119,8 @@ def winvm_user():
 
 
 @pytest.fixture(scope="session")
-def winvm_exec(windows_ready, winvm_ip, winvm_user):
+def winvm_exec(winvm_ip, winvm_user):
     """Helper to exec commands on the Windows VM via SSH."""
-    if not windows_ready:
-        pytest.skip("Windows VM not available — run with --with-windows")
-
     def _exec(cmd: str, **kwargs) -> subprocess.CompletedProcess:
         return ssh_exec(winvm_ip, cmd, user=winvm_user, **kwargs)
-
     return _exec
