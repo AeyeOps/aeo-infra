@@ -4,6 +4,8 @@ services:
     container_name: meshtest-headscale
     hostname: headscale
     command: serve
+    ports:
+      - "127.0.0.1:8080:8080"  # Host-accessible for QEMU Windows VMs
     volumes:
       - ./headscale/config.yaml:/etc/headscale/config.yaml:ro
       - ./headscale/derp.yaml:/etc/headscale/derp.yaml:ro

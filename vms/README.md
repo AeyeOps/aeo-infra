@@ -42,17 +42,59 @@ sudo ./start-ubuntu-vm.sh
 sudo ./stop-ubuntu-vm.sh
 ```
 
-## Windows VM with Shared Networking
+## Windows VMs (Golden Image + Overlay)
 
-The Windows VM can now use the same bridge network:
+Windows VMs use a golden image pattern: build once, spin up disposable instances instantly via copy-on-write overlays. Managed by `winvm.sh`.
+
+### Quick Start
 
 ```bash
-# Stop current Windows VM first (however it was started)
-# Then start with shared networking:
-sudo ./start-windows-vm.sh
+# One-time: build the golden image (interactive Windows install via VNC)
+sudo ./winvm.sh golden build
 
-# Stop
-sudo ./stop-windows-vm.sh
+# Spin up a Windows VM (instant overlay creation)
+sudo ./winvm.sh start meshtest
+
+# Use it
+./winvm.sh ssh meshtest
+./winvm.sh exec meshtest "hostname"
+
+# Tear down (overlay deleted, golden image untouched)
+sudo ./winvm.sh destroy meshtest
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `winvm.sh start <name>` | Create overlay + boot from golden image |
+| `winvm.sh stop <name>` | Graceful ACPI shutdown |
+| `winvm.sh destroy <name>` | Stop + delete overlay files |
+| `winvm.sh ssh <name>` | Connect via SSH |
+| `winvm.sh exec <name> <cmd>` | Run command on VM |
+| `winvm.sh status <name>` | Check VM state |
+| `winvm.sh list` | List running Windows VMs |
+| `winvm.sh golden build` | Build golden image (one-time) |
+| `winvm.sh golden status` | Check golden image |
+| `winvm.sh golden destroy` | Remove golden image |
+
+### Golden Image
+
+Pre-installed in the golden image:
+- Windows 11 ARM64 with OpenSSH Server
+- `testuser` account (password: `TestPass123!`, admin)
+- Static IP `192.168.50.200/24`, gateway `192.168.50.1`
+- Tailscale client
+
+See `golden/README.md` for build details.
+
+### Legacy Scripts
+
+The legacy single-instance scripts are still available:
+
+```bash
+sudo ./start-windows-vm.sh   # Start with shared networking
+sudo ./stop-windows-vm.sh    # Graceful shutdown
 ```
 
 ## Network Architecture

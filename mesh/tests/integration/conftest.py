@@ -76,3 +76,55 @@ def client_b_status(client_b_exec):
     result = client_b_exec(["tailscale", "status", "--json"])
     assert result.returncode == 0, f"tailscale status failed: {result.stderr}"
     return json.loads(result.stdout)
+
+
+# --- Windows VM fixtures ---
+
+
+def ssh_exec(
+    ip: str, cmd: str, *, user: str = "testuser", timeout: int = 30
+) -> subprocess.CompletedProcess:
+    """Run a command on a remote host via SSH."""
+    return subprocess.run(
+        [
+            "ssh",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=accept-new",
+            f"{user}@{ip}",
+            cmd,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+@pytest.fixture(scope="session")
+def windows_ready():
+    """Whether the Windows VM is available for testing."""
+    return os.environ.get("WINDOWS_READY") == "1"
+
+
+@pytest.fixture(scope="session")
+def winvm_ip():
+    """Windows VM IP address."""
+    return os.environ.get("WINVM_IP", "192.168.50.200")
+
+
+@pytest.fixture(scope="session")
+def winvm_user():
+    """Windows VM SSH user."""
+    return os.environ.get("WINVM_USER", "testuser")
+
+
+@pytest.fixture(scope="session")
+def winvm_exec(windows_ready, winvm_ip, winvm_user):
+    """Helper to exec commands on the Windows VM via SSH."""
+    if not windows_ready:
+        pytest.skip("Windows VM not available — run with --with-windows")
+
+    def _exec(cmd: str, **kwargs) -> subprocess.CompletedProcess:
+        return ssh_exec(winvm_ip, cmd, user=winvm_user, **kwargs)
+
+    return _exec

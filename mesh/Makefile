@@ -1,4 +1,4 @@
-.PHONY: validate test integration-test build clean distclean
+.PHONY: validate test integration-test integration-test-windows build clean distclean
 
 # Run all code quality checks
 validate:
@@ -11,9 +11,13 @@ validate:
 test: validate
 	uv run pytest tests/ -v --ignore=tests/integration
 
-# Run Docker Compose integration tests
+# Run Docker Compose integration tests (Linux only)
 integration-test:
 	./tests/integration/run-tests.sh
+
+# Run integration tests with Windows VM (requires golden image)
+integration-test-windows:
+	./tests/integration/run-tests.sh --with-windows
 
 # Build standalone binary with PyInstaller and install to /usr/local/bin
 # Uses persisted spec file if exists, otherwise generates new one
