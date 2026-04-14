@@ -532,9 +532,9 @@ cmd_image_build() {
         if windows_vm_start "$verify_name" "$verify_ip" "$build_tap" ":10" "7200" >/dev/null 2>&1; then
             echo "  Waiting for SSH at ${verify_user}@${verify_ip}..."
 
-            # Wait up to 90s for SSH
+            # Wait up to 180s for SSH (Windows cold boot can take 2-3 minutes)
             local ssh_attempts=0
-            while [[ $ssh_attempts -lt 30 ]]; do
+            while [[ $ssh_attempts -lt 60 ]]; do
                 if ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
                        "${verify_user}@${verify_ip}" "echo ready" 2>/dev/null | grep -q ready; then
                     echo "  SSH verification: SUCCESS"
@@ -546,7 +546,7 @@ cmd_image_build() {
             done
 
             if [[ $verify_ok -eq 0 ]]; then
-                echo "  SSH verification: FAILED (timed out after 90s)"
+                echo "  SSH verification: FAILED (timed out after 180s)"
                 echo "  WARNING: Base image may be incomplete. Check C:\\Windows\\Temp\\firstlogon.log"
             fi
 
