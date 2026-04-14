@@ -217,25 +217,39 @@
       </AutoLogon>
 
       <FirstLogonCommands>
+        <!-- 0. Start logging for post-mortem debugging -->
+        <SynchronousCommand wcm:action="add">
+          <Order>0</Order>
+          <CommandLine>powershell -ExecutionPolicy Bypass -Command "Start-Transcript -Path C:\Windows\Temp\firstlogon.log -Append; Write-Host '=== FirstLogonCommands starting ===' ; Write-Host \"Timestamp: $(Get-Date -Format o)\""</CommandLine>
+          <Description>Start transcript logging</Description>
+        </SynchronousCommand>
+
         <!-- 1. Enable OpenSSH Server -->
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -Command "Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0; Start-Service sshd; Set-Service sshd -StartupType Automatic"</CommandLine>
+          <CommandLine>powershell -ExecutionPolicy Bypass -Command "Write-Host '=== Step 1: OpenSSH ==='; try { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction Stop; Start-Service sshd -ErrorAction Stop; Set-Service sshd -StartupType Automatic; Write-Host 'OpenSSH: SUCCESS' } catch { Write-Host \"OpenSSH: FAILED - $_\" }"</CommandLine>
           <Description>Install and enable OpenSSH Server</Description>
         </SynchronousCommand>
 
         <!-- 2. Set static IP (find first active adapter dynamically) -->
         <SynchronousCommand wcm:action="add">
           <Order>2</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -Command "$a = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -First 1; New-NetIPAddress -InterfaceIndex $a.ifIndex -IPAddress 192.168.50.200 -PrefixLength 24 -DefaultGateway 192.168.50.1; Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses 8.8.8.8"</CommandLine>
+          <CommandLine>powershell -ExecutionPolicy Bypass -Command "Write-Host '=== Step 2: Static IP ==='; try { $a = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -First 1; if (-not $a) { throw 'No active adapter found' }; New-NetIPAddress -InterfaceIndex $a.ifIndex -IPAddress 192.168.50.200 -PrefixLength 24 -DefaultGateway 192.168.50.1 -ErrorAction Stop; Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses 8.8.8.8; Write-Host 'Static IP: SUCCESS' } catch { Write-Host \"Static IP: FAILED - $_\" }"</CommandLine>
           <Description>Set static IP address</Description>
         </SynchronousCommand>
 
         <!-- 3. Download and install Tailscale (direct MSI, no winget dependency) -->
         <SynchronousCommand wcm:action="add">
           <Order>3</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-arm64.msi' -OutFile C:\Windows\Temp\tailscale.msi; Start-Process msiexec.exe -ArgumentList '/i','C:\Windows\Temp\tailscale.msi','/quiet','/norestart' -Wait"</CommandLine>
+          <CommandLine>powershell -ExecutionPolicy Bypass -Command "Write-Host '=== Step 3: Tailscale ==='; try { Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-arm64.msi' -OutFile C:\Windows\Temp\tailscale.msi -ErrorAction Stop; Start-Process msiexec.exe -ArgumentList '/i','C:\Windows\Temp\tailscale.msi','/quiet','/norestart' -Wait; Write-Host 'Tailscale: SUCCESS' } catch { Write-Host \"Tailscale: FAILED - $_\" }"</CommandLine>
           <Description>Download and install Tailscale</Description>
+        </SynchronousCommand>
+
+        <!-- 98. Stop transcript before shutdown -->
+        <SynchronousCommand wcm:action="add">
+          <Order>98</Order>
+          <CommandLine>powershell -ExecutionPolicy Bypass -Command "Write-Host '=== FirstLogonCommands complete ==='; Stop-Transcript"</CommandLine>
+          <Description>Stop transcript logging</Description>
         </SynchronousCommand>
 
         <!-- 99. Signal build complete by shutting down -->

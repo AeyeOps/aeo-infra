@@ -321,7 +321,11 @@ cmd_image_build() {
     # Build modified ISO (no "Press any key" prompt, autounattend.xml bundled)
     if [[ ! -f "$build_iso" ]]; then
         echo "Building no-prompt Windows ISO..."
-        create_noprompt_iso "$iso_file" "$build_iso"
+        if ! create_noprompt_iso "$iso_file" "$build_iso"; then
+            echo "Failed to create noprompt ISO. Cannot proceed." >&2
+            exit 1
+        fi
+        echo "  Created: $build_iso"
     else
         echo "  Using existing no-prompt ISO: $build_iso"
     fi
@@ -505,7 +509,60 @@ cmd_image_build() {
     echo "Cleaning up build files..."
     rm -f "$build_disk" "$build_vars" "$build_rom" "$build_log"
 
-    # Clean up TAP
+    # Clean up TAP (will recreate for verification)
+    if ip link show "$build_tap" &>/dev/null; then
+        ip link set "$build_tap" down 2>/dev/null || true
+        ip link delete "$build_tap" 2>/dev/null || true
+    fi
+
+    # Verify base image by booting and probing SSH
+    echo ""
+    echo "Verifying base image (quick boot + SSH probe)..."
+    local verify_ok=0
+    local verify_ip="192.168.50.200"
+    local verify_user="testuser"
+    local verify_name="base-verify"
+
+    # Create overlay from new base image
+    if windows_overlay_create "$verify_name" >/dev/null 2>&1; then
+        # Recreate network for verification VM
+        ensure_tap "$build_tap" "$BRIDGE_NAME" 2>/dev/null
+
+        # Start VM quietly (using VNC :10 to avoid conflict)
+        if windows_vm_start "$verify_name" "$verify_ip" "$build_tap" ":10" "7200" >/dev/null 2>&1; then
+            echo "  Waiting for SSH at ${verify_user}@${verify_ip}..."
+
+            # Wait up to 90s for SSH
+            local ssh_attempts=0
+            while [[ $ssh_attempts -lt 30 ]]; do
+                if ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+                       "${verify_user}@${verify_ip}" "echo ready" 2>/dev/null | grep -q ready; then
+                    echo "  SSH verification: SUCCESS"
+                    verify_ok=1
+                    break
+                fi
+                ((ssh_attempts++))
+                sleep 3
+            done
+
+            if [[ $verify_ok -eq 0 ]]; then
+                echo "  SSH verification: FAILED (timed out after 90s)"
+                echo "  WARNING: Base image may be incomplete. Check C:\\Windows\\Temp\\firstlogon.log"
+            fi
+
+            # Shut down verification VM
+            windows_vm_stop "$verify_name" "7200" >/dev/null 2>&1 || true
+        else
+            echo "  WARNING: Could not start verification VM"
+        fi
+
+        # Clean up verification overlay
+        windows_vm_destroy "$verify_name" "$build_tap" "7200" >/dev/null 2>&1 || true
+    else
+        echo "  WARNING: Could not create verification overlay"
+    fi
+
+    # Final TAP cleanup
     if ip link show "$build_tap" &>/dev/null; then
         ip link set "$build_tap" down 2>/dev/null || true
         ip link delete "$build_tap" 2>/dev/null || true
@@ -513,7 +570,12 @@ cmd_image_build() {
 
     echo ""
     echo "======================================================="
-    echo "Base image ready at $BASE_IMAGE_DIR"
+    if [[ $verify_ok -eq 1 ]]; then
+        echo "Base image VERIFIED and ready at $BASE_IMAGE_DIR"
+    else
+        echo "Base image ready at $BASE_IMAGE_DIR (SSH verification failed)"
+        echo "  Check firstlogon.log on the VM for errors"
+    fi
     echo ""
     local base_size
     base_size=$(du -h "$BASE_WINDOWS_DISK" 2>/dev/null | cut -f1)

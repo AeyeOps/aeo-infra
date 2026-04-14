@@ -30,9 +30,9 @@ No VNC interaction required. Monitor progress via VNC `:9` (port 5909) if desire
 
 | File | Purpose |
 |------|---------|
-| `/storage/base-images/windows-test.qcow2` | Compressed disk image (read-only base) |
-| `/storage/base-images/windows-test.vars` | UEFI variables snapshot |
-| `/storage/base-images/windows-test.rom` | Padded UEFI firmware (64MB) |
+| `vms/.images/base-images/windows-test.qcow2` | Compressed disk image (read-only base) |
+| `vms/.images/base-images/windows-test.vars` | UEFI variables snapshot |
+| `vms/.images/base-images/windows-test.rom` | Padded UEFI firmware (64MB) |
 
 ### Answer file
 
@@ -66,8 +66,29 @@ sudo ./winvm.sh image build
 
 ## Requirements
 
-- Windows 11 ARM64 ISO at `/storage/win11arm64.iso`
-- VirtIO drivers ISO at `/storage/virtio-win.iso`
+- Windows 11 ARM64 ISO at `vms/.images/win11arm64.iso`
+- VirtIO drivers ISO at `vms/.images/virtio-win.iso`
 - QEMU with KVM support (aarch64)
 - UEFI firmware: `/usr/share/qemu-efi-aarch64/QEMU_EFI.fd`
-- `genisoimage` for building the autounattend ISO
+- `genisoimage`, `7z` for building the modified Windows ISO
+
+## Validation Status
+
+**Verified (code inspection + ISO analysis):**
+- [x] `cdboot_noprompt.efi` and `efisys_noprompt.bin` present in Windows ISO
+- [x] VirtIO ARM64 drivers (`vioscsi/w11/ARM64`, `NetKVM/w11/ARM64`) present
+- [x] `processorArchitecture="arm64"` correct for ARM64 Windows
+- [x] Tailscale ARM64 MSI URL accessible (302 → 200)
+- [x] Error handling in ISO rebuild and FirstLogonCommands logging
+
+**Requires successful build run to validate:**
+- [ ] Q1: virtio-scsi disk visible to Windows installer
+- [ ] Q2: autounattend.xml fully processes on ARM64 UEFI
+- [ ] Q3: FirstLogonCommands execute (OpenSSH, static IP, Tailscale)
+- [ ] Full build completes and VM shuts down automatically
+- [ ] Post-build SSH verification succeeds
+
+**Troubleshooting:**
+- If build stalls, check VNC `:9` or `/tmp/winbuild-latest.ppm`
+- If SSH verification fails, boot a VM and check `C:\Windows\Temp\firstlogon.log`
+- Build timeout is 3h (soft cap) — script warns but does not kill

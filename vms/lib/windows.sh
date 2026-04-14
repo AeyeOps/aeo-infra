@@ -63,20 +63,49 @@ create_noprompt_iso() {
     local workdir
     workdir=$(mktemp -d)
 
+    # Cleanup helper for error paths
+    _noprompt_cleanup() { rm -rf "$workdir"; }
+
     # Extract the entire ISO
     echo "    Extracting Windows ISO..."
-    7z x -o"$workdir" "$source_iso" >/dev/null
+    if ! 7z x -o"$workdir" "$source_iso" >/dev/null; then
+        echo "    ERROR: Failed to extract ISO: $source_iso" >&2
+        _noprompt_cleanup
+        return 1
+    fi
+
+    # Verify required files exist in the extracted ISO
+    if [[ ! -f "${workdir}/efi/microsoft/boot/cdboot_noprompt.efi" ]]; then
+        echo "    ERROR: cdboot_noprompt.efi not found in ISO" >&2
+        _noprompt_cleanup
+        return 1
+    fi
+    if [[ ! -f "${workdir}/efi/microsoft/boot/efisys_noprompt.bin" ]]; then
+        echo "    ERROR: efisys_noprompt.bin not found in ISO" >&2
+        _noprompt_cleanup
+        return 1
+    fi
 
     # Swap cdboot.efi with the no-prompt variant
-    cp "${workdir}/efi/microsoft/boot/cdboot_noprompt.efi" \
-       "${workdir}/efi/microsoft/boot/cdboot.efi"
+    if ! cp "${workdir}/efi/microsoft/boot/cdboot_noprompt.efi" \
+            "${workdir}/efi/microsoft/boot/cdboot.efi"; then
+        echo "    ERROR: Failed to swap cdboot.efi" >&2
+        _noprompt_cleanup
+        return 1
+    fi
 
     # Add autounattend.xml at the root for Windows Setup discovery
-    cp "$AUTOUNATTEND_XML" "${workdir}/Autounattend.xml"
+    if ! cp "$AUTOUNATTEND_XML" "${workdir}/Autounattend.xml"; then
+        echo "    ERROR: Failed to copy autounattend.xml" >&2
+        _noprompt_cleanup
+        return 1
+    fi
 
     # Rebuild the ISO with UDF + EFI boot support
     echo "    Rebuilding ISO with no-prompt boot + autounattend..."
-    genisoimage \
+    local genisoimage_log
+    genisoimage_log=$(mktemp)
+    if ! genisoimage \
         -o "$output_iso" \
         -iso-level 3 \
         -udf \
@@ -85,9 +114,24 @@ create_noprompt_iso() {
         -eltorito-alt-boot \
         -e "efi/microsoft/boot/efisys_noprompt.bin" \
         -no-emul-boot \
-        "$workdir" 2>/dev/null
+        "$workdir" >"$genisoimage_log" 2>&1; then
+        echo "    ERROR: genisoimage failed to create ISO" >&2
+        cat "$genisoimage_log" >&2
+        rm -f "$genisoimage_log"
+        _noprompt_cleanup
+        return 1
+    fi
+    rm -f "$genisoimage_log"
 
-    rm -rf "$workdir"
+    # Verify output was created
+    if [[ ! -f "$output_iso" ]]; then
+        echo "    ERROR: Output ISO not created: $output_iso" >&2
+        _noprompt_cleanup
+        return 1
+    fi
+
+    _noprompt_cleanup
+    return 0
 }
 
 # ─── Overlay Lifecycle ─────────────────────────────────────────────────
