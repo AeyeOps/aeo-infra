@@ -388,14 +388,15 @@ cmd_image_build() {
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
+        -boot strict=on \
+        -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -device "usb-storage,drive=cdrom0,removable=on" \
+        -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -device "usb-storage,drive=virtio0,removable=on" \
         -object "iothread,id=io0" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
         -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=0" \
-        -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
-        -device "scsi-cd,drive=cdrom0,bus=scsi0.0" \
-        -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
-        -device "scsi-cd,drive=virtio0,bus=scsi0.0" \
         -drive "file=${build_rom},if=pflash,unit=0,format=raw,readonly=on" \
         -drive "file=${build_vars},if=pflash,unit=1,format=raw" \
         -object "rng-random,id=rng0,filename=/dev/urandom" \
