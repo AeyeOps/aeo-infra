@@ -79,21 +79,14 @@ seed_build_disk() {
     startup_nsh=$(mktemp)
     cat > "$startup_nsh" << 'STARTUP'
 @echo -off
-map -r
-echo.
-echo Searching for Windows Boot Manager...
+echo Searching for Windows Boot Manager (bootmgfw.efi)...
 for %f in FS0 FS1 FS2 FS3 FS4 FS5 FS6 FS7
-  if exist %f:\efi\boot\bootaa64.efi then
-    echo Booting %f:\efi\boot\bootaa64.efi
-    %f:\efi\boot\bootaa64.efi
-  endif
   if exist %f:\efi\microsoft\boot\bootmgfw.efi then
     echo Booting %f:\efi\microsoft\boot\bootmgfw.efi
     %f:\efi\microsoft\boot\bootmgfw.efi
   endif
 endfor
-echo ERROR: Windows Boot Manager not found on any filesystem
-echo Listing available filesystems:
+echo ERROR: bootmgfw.efi not found on any filesystem
 map -t fs
 STARTUP
 
