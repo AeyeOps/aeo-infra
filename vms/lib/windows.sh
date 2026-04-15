@@ -51,79 +51,65 @@ windows_base_image_status() {
     fi
 }
 
-# ─── Autounattend + Startup FAT Image ─────────────────────────────────
+# ─── Modified ISO (xorriso append) ────────────────────────────────────
 
-# Create a FAT image containing Autounattend.xml and startup.nsh.
+# Append startup.nsh and Autounattend.xml to a copy of the Windows ISO.
 #
-# The image serves two purposes:
-# 1. Autounattend.xml: Windows Setup discovers it on removable media
-# 2. startup.nsh: UEFI Shell auto-executes it to boot Windows Setup
+# Uses xorriso's append mode to add files to the ISO 9660 directory tree
+# without touching the El Torito boot catalog. The original boot image
+# (efisys.bin at LBA 531, spanning the full disc) stays intact — only
+# the ISO 9660 root directory gets updated to include the new files.
 #
-# Boot flow: cdboot.efi shows "Press any key" → times out → UEFI Shell
-# starts → finds startup.nsh → loads bootaa64.efi from ISO → Windows
-# Setup starts unattended. No key injection needed.
+# Boot flow: UEFI reads El Torito → cdboot.efi → "Press any key" → times
+# out → UEFI Shell → reads ISO 9660 → finds startup.nsh → executes it →
+# loads bootaa64.efi directly → Windows Setup finds Autounattend.xml on
+# the same ISO → unattended install proceeds.
 #
-# We bypass cdboot.efi entirely because:
+# We bypass cdboot.efi's key prompt without modifying the boot image:
 # - cdboot_noprompt.efi crashes on ARM64
-# - QEMU sendkey/VNC keys don't reach USB keyboard on ARM64 virt
-# Args: output_img
-create_autounattend_img() {
-    local output_img="$1"
+# - QEMU sendkey/VNC don't reach USB keyboard on ARM64 virt
+# - Rebuilding the ISO breaks El Torito full-disc extent
+# - UEFI doesn't enumerate extra USB/virtio devices reliably
+# Args: source_iso, output_iso
+create_noprompt_iso() {
+    local source_iso="$1"
+    local output_iso="$2"
 
     if [[ ! -f "$AUTOUNATTEND_XML" ]]; then
         echo "    ERROR: Autounattend.xml not found: $AUTOUNATTEND_XML" >&2
         return 1
     fi
 
-    echo "    Creating autounattend + startup FAT image..."
-
-    # 32MB FAT16 disk with MBR partition table.
-    # UEFI firmware on ARM64 doesn't enumerate tiny superfloppy USB devices
-    # reliably. A partitioned disk image with FAT16 is recognized consistently.
-    dd if=/dev/zero of="$output_img" bs=1M count=32 status=none
-
-    # Create MBR with single FAT16 partition spanning the whole disk
-    printf 'o\nn\np\n1\n\n\nt\n6\nw\n' | fdisk "$output_img" >/dev/null 2>&1
-
-    # Format the partition (skip 1MB for MBR alignment, use loop+offset)
-    local loop_dev
-    loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit $((32*1024*1024 - 2048*512)) "$output_img")
-    mkfs.fat -F 16 -n AUNATTEND "$loop_dev" >/dev/null
-    losetup -d "$loop_dev"
-
-    # Create startup.nsh that boots Windows from the ISO.
-    # Try each filesystem in order — the ISO shows up as FSn: depending
-    # on USB enumeration order.
     local startup_nsh
     startup_nsh=$(mktemp)
     cat > "$startup_nsh" << 'STARTUP'
 @echo -off
-echo Searching for Windows Boot Manager on mapped filesystems...
+echo Searching for Windows Boot Manager...
 for %f in FS0 FS1 FS2 FS3 FS4 FS5
   if exist %f:\efi\boot\bootaa64.efi then
-    echo Found at %f:\efi\boot\bootaa64.efi - booting...
+    echo Found at %f:\efi\boot\bootaa64.efi
     %f:\efi\boot\bootaa64.efi
   endif
 endfor
-echo ERROR: Could not find bootaa64.efi on any filesystem
+echo ERROR: bootaa64.efi not found
 STARTUP
 
-    # Copy files into the FAT partition (offset 2048 sectors from start)
-    local mnt
-    mnt=$(mktemp -d)
-    if ! mount -o loop,offset=$((2048*512)) "$output_img" "$mnt"; then
-        echo "    ERROR: Failed to mount FAT partition" >&2
-        rm -f "$startup_nsh"
-        rmdir "$mnt"
+    echo "    Copying original ISO..."
+    cp "$source_iso" "$output_iso"
+
+    echo "    Appending startup.nsh + Autounattend.xml to ISO 9660 tree..."
+    if ! xorriso -dev "$output_iso" \
+        -boot_image any replay \
+        -map "$startup_nsh" /startup.nsh \
+        -map "$AUTOUNATTEND_XML" /Autounattend.xml \
+        -commit 2>/dev/null; then
+        echo "    ERROR: xorriso append failed" >&2
+        rm -f "$startup_nsh" "$output_iso"
         return 1
     fi
-    cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
-    cp "$startup_nsh" "$mnt/startup.nsh"
-    umount "$mnt"
-    rmdir "$mnt"
     rm -f "$startup_nsh"
 
-    echo "    Created: $output_img"
+    echo "    Created: $output_iso"
     return 0
 }
 

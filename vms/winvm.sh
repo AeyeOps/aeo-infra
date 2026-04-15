@@ -263,7 +263,7 @@ cmd_image_build() {
 
     local iso_file="${STORAGE_DIR}/win11arm64.iso"
     local virtio_iso="${STORAGE_DIR}/virtio-win.iso"
-    local autounattend_img="${STORAGE_DIR}/autounattend.img"
+    local build_iso="${STORAGE_DIR}/win11arm64-noprompt.iso"
     local build_disk="${STORAGE_DIR}/base-build-windows.img"
     local build_vars="${STORAGE_DIR}/base-build-windows.vars"
     local build_rom="${STORAGE_DIR}/base-build-windows.rom"
@@ -318,13 +318,18 @@ cmd_image_build() {
     # Create base image directory
     mkdir -p "$BASE_IMAGE_DIR"
 
-    # Create autounattend + startup FAT image.
-    # Uses original Microsoft ISO unmodified (El Torito full-disc extent).
+    # Append startup.nsh + Autounattend.xml to ISO 9660 tree.
+    # Preserves the original El Torito boot catalog (full-disc extent).
     # cdboot.efi "Press any key" times out → UEFI Shell → startup.nsh
     # boots Windows directly via bootaa64.efi, bypassing cdboot entirely.
-    if ! create_autounattend_img "$autounattend_img"; then
-        echo "Failed to create autounattend image. Cannot proceed." >&2
-        exit 1
+    if [[ ! -f "$build_iso" ]]; then
+        echo "Building modified Windows ISO..."
+        if ! create_noprompt_iso "$iso_file" "$build_iso"; then
+            echo "Failed to create modified ISO. Cannot proceed." >&2
+            exit 1
+        fi
+    else
+        echo "  Using existing modified ISO: $build_iso"
     fi
 
     # Create build disk (raw, 64G)
@@ -356,11 +361,10 @@ cmd_image_build() {
 
     # ── PHASE 1: Boot from ISO, extract Windows image ──────────────────
     #
-    # Uses the ORIGINAL Microsoft ISO unmodified — its El Torito boot entry
-    # spans the full disc, which ARM64 UEFI requires. cdboot.efi shows
-    # "Press any key" which times out after ~8s. UEFI then drops to Shell
-    # which auto-runs startup.nsh from the autounattend USB, loading
-    # bootaa64.efi directly (bypassing cdboot entirely).
+    # Uses a copy of the original ISO with startup.nsh + Autounattend.xml
+    # appended to the ISO 9660 tree (El Torito boot catalog preserved).
+    # cdboot.efi "Press any key" times out → UEFI Shell → startup.nsh
+    # on FS0: → loads bootaa64.efi directly → Windows Setup starts.
     #
     # WinPE boots from the ISO, discovers autounattend.xml on the USB drive,
     # partitions the disk, extracts the WIM image (~8GB), sets up the EFI
@@ -392,12 +396,10 @@ cmd_image_build() {
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
-        -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -drive "file=${build_iso},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=cdrom0,bootindex=0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
-        -drive "file=${autounattend_img},id=answer0,format=raw,cache=unsafe,readonly=on,if=none" \
-        -device "virtio-blk-pci,drive=answer0" \
         -object "iothread,id=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
@@ -620,7 +622,7 @@ cmd_image_build() {
     cp "$build_rom" "$BASE_WINDOWS_ROM"
 
     echo "Cleaning up build files..."
-    rm -f "$build_disk" "$build_vars" "$build_rom" "$build_log" "$autounattend_img"
+    rm -f "$build_disk" "$build_vars" "$build_rom" "$build_log"
 
     # Clean up TAP (will recreate for verification)
     if ip link show "$build_tap" &>/dev/null; then
