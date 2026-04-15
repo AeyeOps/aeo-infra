@@ -466,8 +466,9 @@ def send_key():
     cmd['arguments']['events'][0]['data']['down'] = False
     s.sendall(json.dumps(cmd).encode() + b'\n')
     s.recv(4096)
-time.sleep(5)
-for i in range(10):
+# Send keys from 3s to 33s to cover varying USB enumeration times
+time.sleep(3)
+for i in range(30):
     send_key()
     sys.stdout.write('.')
     sys.stdout.flush()
