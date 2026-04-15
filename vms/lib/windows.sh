@@ -77,20 +77,32 @@ seed_build_disk() {
 
     local startup_nsh
     startup_nsh=$(mktemp)
-    # Debug: list FS1 root to find the correct path/case, then boot.
-    # FS0=CDROM (ISO 9660, minimal), FS1=VenMedia (UDF, full content).
+    # Launch the Windows Boot Manager from the ISO. On Windows 11 ARM64
+    # ISOs, \efi\boot\bootaa64.efi IS bootmgfw.efi (verified via strings):
+    # launching it bypasses cdboot.efi's "Press any key" prompt entirely.
+    # The BCD at \efi\microsoft\boot\BCD is found automatically.
+    #
+    # Filesystem numbering depends on enumeration order (build-disk ESP
+    # vs ISO UDF), so we try every candidate in turn. The first one that
+    # exists takes over the process — execution stops there.
     cat > "$startup_nsh" << 'STARTUP'
+@echo -off
+echo Launching Windows Boot Manager...
+FS0:\efi\boot\bootaa64.efi
+FS1:\efi\boot\bootaa64.efi
+FS2:\efi\boot\bootaa64.efi
+FS3:\efi\boot\bootaa64.efi
+echo ERROR: bootaa64.efi not found on any filesystem
+echo === filesystem map ===
+map -b
 echo === FS0 root ===
 ls FS0:\
 echo === FS1 root ===
 ls FS1:\
-echo === FS1 efi ===
-ls FS1:\efi\
-echo === Attempting boot ===
-FS1:\efi\microsoft\boot\bootmgfw.efi
-FS1:\EFI\Microsoft\Boot\bootmgfw.efi
-FS0:\bootmgr.efi
-echo ERROR: boot failed
+echo === FS2 root ===
+ls FS2:\
+echo === FS3 root ===
+ls FS3:\
 STARTUP
 
     echo "    Creating GPT with EFI System Partition on build disk..."
