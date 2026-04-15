@@ -116,18 +116,20 @@ seed_build_disk() {
 
     # Extract boot files from ISO
     echo "    Extracting boot files from ISO..."
-    mkdir -p "$mnt/EFI/BOOT" "$mnt/EFI/Microsoft/Boot/resources" "$mnt/sources"
+    mkdir -p "$mnt/EFI/BOOT" "$mnt/EFI/Microsoft/Boot/resources" "$mnt/boot" "$mnt/sources"
     7z e -o"$mnt/EFI/BOOT" "$iso_path" "efi/boot/bootaa64.efi" >/dev/null 2>&1
     # Rename to standard UEFI default loader name
     mv "$mnt/EFI/BOOT/bootaa64.efi" "$mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true
     7z e -o"$mnt/EFI/Microsoft/Boot" "$iso_path" "efi/microsoft/boot/bcd" >/dev/null 2>&1
     7z e -o"$mnt/EFI/Microsoft/Boot/resources" "$iso_path" "efi/microsoft/boot/resources/bootres.dll" >/dev/null 2>&1
+    # boot.sdi is required by BCD for creating the WinPE RAM disk
+    7z e -o"$mnt/boot" "$iso_path" "boot/boot.sdi" >/dev/null 2>&1
     echo "    Extracting boot.wim (~610MB)..."
     7z e -o"$mnt/sources" "$iso_path" "sources/boot.wim" >/dev/null 2>&1
 
     # Verify critical files
     local ok=1
-    for f in "$mnt/EFI/BOOT/BOOTAA64.EFI" "$mnt/EFI/Microsoft/Boot/bcd" "$mnt/sources/boot.wim"; do
+    for f in "$mnt/EFI/BOOT/BOOTAA64.EFI" "$mnt/EFI/Microsoft/Boot/bcd" "$mnt/boot/boot.sdi" "$mnt/sources/boot.wim"; do
         if [[ ! -f "$f" ]]; then
             echo "    ERROR: Missing: $f" >&2
             ok=0
