@@ -53,100 +53,62 @@ windows_base_image_status() {
 
 # ─── Build Disk Seeding ───────────────────────────────────────────────
 
-# Create a small FAT image containing Autounattend.xml for WinPE to find.
-# WinPE scans all drives with assigned letters for Autounattend.xml.
-# USB removable media always gets a drive letter; ESPs on hard drives don't.
-# Args: output_image_path
-# Returns: 0 on success
-create_autounattend_img() {
-    local img_path="$1"
+# Seed the build disk with a small FAT32 data partition containing
+# startup.nsh and Autounattend.xml.
+#
+# startup.nsh is auto-executed by TianoCore's embedded UEFI Shell
+# when cdboot times out (ARM64). It launches bootmgfw.efi from the
+# Windows ISO's USB filesystem.
+#
+# The partition uses type 0700 (basic data, not ESP) so that WinPE
+# assigns it a drive letter and discovers Autounattend.xml.
+# Windows Setup's WillWipeDisk=true wipes this partition later.
+#
+# Args: disk_path
+seed_build_disk() {
+    local disk_path="$1"
 
     if [[ ! -f "$AUTOUNATTEND_XML" ]]; then
         echo "    ERROR: Autounattend.xml not found: $AUTOUNATTEND_XML" >&2
         return 1
     fi
 
-    # 16MB FAT16 image (minimum viable size for FAT16)
-    dd if=/dev/zero of="$img_path" bs=1M count=16 2>/dev/null
-    mkfs.fat -F 16 -n AUNATTEND "$img_path" >/dev/null
-
-    local mnt
-    mnt=$(mktemp -d)
-    mount -o loop "$img_path" "$mnt"
-    cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
-    umount "$mnt"
-    rmdir "$mnt"
-
-    echo "    Created Autounattend.xml USB image"
-    return 0
-}
-
-# Seed the build disk with a 1GB bootable ESP containing:
-#   \EFI\BOOT\BOOTAA64.EFI  — bootmgfw (from Windows ISO)
-#   \EFI\Microsoft\Boot\BCD — boot configuration (from ISO)
-#   \sources\boot.wim       — Windows PE (from ISO, ~610MB)
-#
-# This bypasses cdboot.efi entirely: UEFI firmware boots bootmgfw
-# directly from the ESP. bootmgfw reads BCD, loads boot.wim, and
-# starts WinPE which reads install.wim from the USB-attached ISO.
-#
-# Windows Setup's WillWipeDisk=true wipes this partition later.
-# Args: disk_path, iso_path
-seed_build_disk() {
-    local disk_path="$1"
-    local iso_path="$2"
-
-    if [[ ! -f "$iso_path" ]]; then
-        echo "    ERROR: Windows ISO not found: $iso_path" >&2
-        return 1
-    fi
-
-    echo "    Creating GPT with 1GB EFI System Partition..."
+    echo "    Creating GPT with FAT data partition on build disk..."
     sgdisk -Z "$disk_path" >/dev/null 2>&1
-    sgdisk -n 1:2048:+1024M -t 1:ef00 -c 1:ESP "$disk_path" >/dev/null 2>&1
+    sgdisk -n 1:2048:+64M -t 1:0700 -c 1:SETUP "$disk_path" >/dev/null 2>&1
 
-    local esp_size=$((1024*1024*1024))
     local loop_dev
-    loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit "$esp_size" "$disk_path")
-    mkfs.fat -F 32 -n ESP "$loop_dev" >/dev/null
+    loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit $((64*1024*1024)) "$disk_path")
+    mkfs.fat -F 32 -n SETUP "$loop_dev" >/dev/null
 
     local mnt
     mnt=$(mktemp -d)
     mount "$loop_dev" "$mnt"
 
-    # Extract boot files from ISO
-    echo "    Extracting boot files from ISO..."
-    mkdir -p "$mnt/EFI/BOOT" "$mnt/EFI/Microsoft/Boot/resources" "$mnt/boot" "$mnt/sources"
-    7z e -o"$mnt/EFI/BOOT" "$iso_path" "efi/boot/bootaa64.efi" >/dev/null 2>&1
-    # Rename to standard UEFI default loader name
-    mv "$mnt/EFI/BOOT/bootaa64.efi" "$mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true
-    7z e -o"$mnt/EFI/Microsoft/Boot" "$iso_path" "efi/microsoft/boot/bcd" >/dev/null 2>&1
-    7z e -o"$mnt/EFI/Microsoft/Boot/resources" "$iso_path" "efi/microsoft/boot/resources/bootres.dll" >/dev/null 2>&1
-    # boot.sdi is required by BCD for creating the WinPE RAM disk
-    7z e -o"$mnt/boot" "$iso_path" "boot/boot.sdi" >/dev/null 2>&1
-    echo "    Extracting boot.wim (~610MB)..."
-    7z e -o"$mnt/sources" "$iso_path" "sources/boot.wim" >/dev/null 2>&1
+    # startup.nsh: launched by UEFI Shell, boots Windows from ISO
+    cat > "$mnt/startup.nsh" << 'STARTUP'
+@echo -off
+echo Launching Windows Boot Manager...
+FS0:\efi\boot\bootaa64.efi
+FS1:\efi\boot\bootaa64.efi
+FS2:\efi\boot\bootaa64.efi
+FS3:\efi\boot\bootaa64.efi
+FS4:\efi\boot\bootaa64.efi
+FS5:\efi\boot\bootaa64.efi
+echo ERROR: bootaa64.efi not found
+map -b
+STARTUP
 
-    # Verify critical files
-    local ok=1
-    for f in "$mnt/EFI/BOOT/BOOTAA64.EFI" "$mnt/EFI/Microsoft/Boot/bcd" "$mnt/boot/boot.sdi" "$mnt/sources/boot.wim"; do
-        if [[ ! -f "$f" ]]; then
-            echo "    ERROR: Missing: $f" >&2
-            ok=0
-        fi
-    done
+    cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
 
     umount "$mnt"
     rmdir "$mnt"
     losetup -d "$loop_dev"
 
-    if [[ "$ok" -eq 0 ]]; then
-        return 1
-    fi
-
-    echo "    Seeded build disk with Windows boot files"
+    echo "    Seeded build disk with startup.nsh + Autounattend.xml"
     return 0
 }
+
 
 # ─── Overlay Lifecycle ─────────────────────────────────────────────────
 

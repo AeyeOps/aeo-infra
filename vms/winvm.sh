@@ -340,17 +340,11 @@ cmd_image_build() {
     # Create base image directory
     mkdir -p "$BASE_IMAGE_DIR"
 
-    # Create build disk with Windows boot files on ESP
+    # Create build disk with startup.nsh + Autounattend.xml
     echo "Creating 64G build disk..."
     qemu-img create -f raw "$build_disk" 64G
-    if ! seed_build_disk "$build_disk" "$iso_file"; then
+    if ! seed_build_disk "$build_disk"; then
         echo "Failed to seed build disk. Cannot proceed." >&2
-        exit 1
-    fi
-
-    # Create Autounattend USB image for WinPE to discover
-    if ! create_autounattend_img "$autounattend_img"; then
-        echo "Failed to create Autounattend image. Cannot proceed." >&2
         exit 1
     fi
 
@@ -377,17 +371,16 @@ cmd_image_build() {
 
     local screen_ppm="/tmp/winbuild-latest.ppm"
 
-    # ── PHASE 1: Boot from disk, extract Windows image ──────────────────
+    # ── PHASE 1: Boot from ISO via UEFI Shell, extract Windows image ────
     #
-    # The build disk's ESP contains bootmgfw.efi, BCD, and boot.wim
-    # extracted from the Windows ISO. UEFI boots bootmgfw directly as
-    # \EFI\BOOT\BOOTAA64.EFI — no cdboot.efi, no Shell, no keystrokes.
+    # cdboot.efi on ARM64 hangs at "Press any key". QMP input-send-event
+    # dismisses it (only works reliably with ≤2 USB devices). cdboot
+    # tries to boot from the CD, fails, and firmware drops to TianoCore's
+    # embedded UEFI Shell. Shell auto-executes startup.nsh from the build
+    # disk's FAT partition, which launches bootmgfw.efi from the ISO.
     #
-    # The Windows ISO stays attached (USB) for install.wim, and the
-    # VirtIO ISO for driver injection during WinPE.
-    #
-    # WinPE discovers Autounattend.xml on the USB drive, partitions the
-    # disk (wiping the ESP), extracts install.wim, and reboots.
+    # WinPE discovers Autounattend.xml on the build disk's data partition,
+    # partitions the disk, extracts install.wim, and reboots.
 
     echo ""
     echo "Phase 1: Extracting Windows image from ISO..."
@@ -404,6 +397,7 @@ cmd_image_build() {
         -display "vnc=${build_vnc},websocket=${build_vnc_ws}" \
         -device ramfb \
         -monitor "telnet:localhost:${build_monitor},server,nowait,nodelay" \
+        -qmp "unix:${build_qmp},server,nowait" \
         -daemonize \
         -D "$build_log" \
         -pidfile "$build_pid" \
@@ -418,12 +412,10 @@ cmd_image_build() {
         -device "usb-storage,drive=cdrom0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
-        -drive "file=${autounattend_img},id=aua0,format=raw,cache=unsafe,readonly=on,if=none" \
-        -device "usb-storage,drive=aua0,removable=on" \
         -object "iothread,id=io0" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
-        -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=0" \
+        -device "scsi-hd,drive=data0,bus=scsi0.0" \
         -drive "file=${build_rom},if=pflash,unit=0,format=raw,readonly=on" \
         -drive "file=${build_vars},if=pflash,unit=1,format=raw" \
         -object "rng-random,id=rng0,filename=/dev/urandom" \
@@ -440,7 +432,40 @@ cmd_image_build() {
     local pid
     pid=$(cat "$build_pid")
     echo "  QEMU started (PID: $pid)"
-    echo "  Boot path: disk ESP → bootmgfw → BCD → boot.wim → Windows Setup"
+
+    # Dismiss cdboot.efi's "Press any key" prompt via QMP.
+    # QMP input-send-event reaches USB keyboard on ARM64 (unlike HMP
+    # sendkey or VNC key events). Only reliable with ≤2 USB devices.
+    echo "  Dismissing cdboot via QMP..."
+    chmod 666 "${build_qmp}" 2>/dev/null || true
+    python3 -c "
+import socket, json, time, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect('${build_qmp}')
+s.settimeout(5)
+s.recv(4096)
+s.sendall(json.dumps({'execute': 'qmp_capabilities'}).encode() + b'\n')
+s.recv(4096)
+def send_key():
+    cmd = {'execute': 'input-send-event', 'arguments': {'events': [
+        {'type': 'key', 'data': {'down': True, 'key': {'type': 'qcode', 'data': 'ret'}}}
+    ]}}
+    s.sendall(json.dumps(cmd).encode() + b'\n')
+    s.recv(4096)
+    time.sleep(0.05)
+    cmd['arguments']['events'][0]['data']['down'] = False
+    s.sendall(json.dumps(cmd).encode() + b'\n')
+    s.recv(4096)
+time.sleep(5)
+for i in range(10):
+    send_key()
+    sys.stdout.write('.')
+    sys.stdout.flush()
+    time.sleep(1)
+print()
+s.close()
+"
+    echo "  Boot path: cdboot → QMP → Shell → startup.nsh → bootmgfw"
     echo ""
     printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 
