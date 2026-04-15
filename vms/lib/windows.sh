@@ -77,9 +77,19 @@ create_autounattend_img() {
 
     echo "    Creating autounattend + startup FAT image..."
 
-    # 2MB FAT12 image
-    dd if=/dev/zero of="$output_img" bs=1M count=2 status=none
-    mkfs.fat -F 12 -n AUNATTEND "$output_img" >/dev/null
+    # 32MB FAT16 disk with MBR partition table.
+    # UEFI firmware on ARM64 doesn't enumerate tiny superfloppy USB devices
+    # reliably. A partitioned disk image with FAT16 is recognized consistently.
+    dd if=/dev/zero of="$output_img" bs=1M count=32 status=none
+
+    # Create MBR with single FAT16 partition spanning the whole disk
+    printf 'o\nn\np\n1\n\n\nt\n6\nw\n' | fdisk "$output_img" >/dev/null 2>&1
+
+    # Format the partition (skip 1MB for MBR alignment, use loop+offset)
+    local loop_dev
+    loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit $((32*1024*1024 - 2048*512)) "$output_img")
+    mkfs.fat -F 16 -n AUNATTEND "$loop_dev" >/dev/null
+    losetup -d "$loop_dev"
 
     # Create startup.nsh that boots Windows from the ISO.
     # Try each filesystem in order — the ISO shows up as FSn: depending
@@ -98,24 +108,19 @@ endfor
 echo ERROR: Could not find bootaa64.efi on any filesystem
 STARTUP
 
-    # Copy files into the FAT image
-    if command -v mcopy &>/dev/null; then
-        mcopy -i "$output_img" "$AUTOUNATTEND_XML" ::/Autounattend.xml
-        mcopy -i "$output_img" "$startup_nsh" ::/startup.nsh
-    else
-        local mnt
-        mnt=$(mktemp -d)
-        if ! mount -o loop "$output_img" "$mnt"; then
-            echo "    ERROR: Failed to mount FAT image" >&2
-            rm -f "$startup_nsh"
-            rmdir "$mnt"
-            return 1
-        fi
-        cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
-        cp "$startup_nsh" "$mnt/startup.nsh"
-        umount "$mnt"
+    # Copy files into the FAT partition (offset 2048 sectors from start)
+    local mnt
+    mnt=$(mktemp -d)
+    if ! mount -o loop,offset=$((2048*512)) "$output_img" "$mnt"; then
+        echo "    ERROR: Failed to mount FAT partition" >&2
+        rm -f "$startup_nsh"
         rmdir "$mnt"
+        return 1
     fi
+    cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
+    cp "$startup_nsh" "$mnt/startup.nsh"
+    umount "$mnt"
+    rmdir "$mnt"
     rm -f "$startup_nsh"
 
     echo "    Created: $output_img"
