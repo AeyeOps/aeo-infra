@@ -21,33 +21,40 @@ The `Press any key to boot from CD or DVD` prompt from Windows ARM64's
   only USB keyboard. Keys never reach the guest.
 - **QMP `input-send-event`** — works ~2/8 attempts with identical config.
   Unreliable, probably a timing race with USB enumeration.
-- **VNC KeyEvent** — untested with a full RFB 3.8 handshake against cdboot
-  directly. Minimal RFB clients don't work (see §3).
+- **VNC KeyEvent with full RFB 3.8 handshake** — verified on 2026-04-15:
+  71 space presses over 21 s through a fully-primed RFB connection had no
+  effect on cdboot's prompt. Full-RFB input reaches the *Shell* fine but
+  does NOT reach cdboot.
 
-**The workaround**: let cdboot time out naturally. In a *minimal* QEMU config
-(no `bootindex`, no extra USB devices, no QMP socket), cdboot exits after ~10
-seconds and the firmware falls through to the embedded UEFI Shell.
+**Update 2026-04-15**: cdboot does NOT time out in any config we've seen.
+Earlier notes about a 10 s timeout were wrong — the "Shell appeared"
+outcome of the prior session was produced some other way (possibly boot
+option fall-through when that particular boot attempt failed for a
+different reason). In a minimal config with blank NVRAM, cdboot sits on
+"Press any key" indefinitely (observed 60 s+).
 
-With **3+ USB devices** or certain bootindex combinations, TianoCore retries
-cdboot repeatedly and it appears to "hang forever". This was misdiagnosed as
-cdboot not timing out; it's actually the firmware reattempting.
+### 2. TianoCore ARM64 UEFI Shell CAN read UDF (FS1), not ISO 9660 (FS0)
 
-### 2. TianoCore ARM64 UEFI Shell cannot execute files from USB/SCSI CD-ROM
+**Previous note was wrong.** On 2026-04-15 we confirmed the Shell reads
+files from the Windows ISO's UDF layer just fine:
 
-The UEFI Shell (both the embedded one in `QEMU_EFI.fd` and the installed
-`efi-shell-aa64` package) successfully enumerates USB mass-storage CD-ROMs
-in `map` — you see FS0 (ISO 9660 layer) and FS1 (UDF layer) for the Windows
-ISO.
+```
+FS0 (ISO 9660, device path ends CDROM(0x0))     — effectively empty on
+                                                   Windows 11 ARM64 ISOs
+                                                   (ISO 9660 is only a
+                                                   bridge; UDF is primary)
+FS1 (UDF,      device path ends VenMedia(GUID)) — full tree, readable
+```
 
-But `cd FSx:\`, `FSx:`, `ls FSx:\`, and direct execution `FSx:\path\to\bin.efi`
-**all fail** with either `Current directory not specified` or
-`'FSx:\...' is not recognized as an internal or external command`.
+`ls FS1:\`, `cd FS1:\efi\boot`, and `type FS1:\...` all work. The prior
+session's "Shell can't read CDROM" finding was based on FS0 tests where
+the filesystem was actually empty.
 
-This is a filesystem-driver-level limitation. Typing the command correctly
-(verified via full-RFB VNC) doesn't help — the driver just can't read files.
-
-FAT32 on hard disk works fine. The limitation is specific to the
-CD-ROM/UDF/ISO-9660 code paths.
+**However**: invoking `FS1:\efi\boot\bootaa64.efi` from the Shell *does*
+launch Windows Boot Manager (bootmgfw) — screen clears, binary runs — but
+it **silently exits back to the Shell prompt** without transferring to
+WinPE. Same result whether run with root as current device or with FS1 as
+current device. See §4 for the likely cause.
 
 ### 3. Full RFB 3.8 handshake is required for VNC key injection to reach the guest
 
@@ -70,7 +77,22 @@ A full client must do:
 
 Reference implementation that works: see `vnc_full.py` below.
 
-### 4. bootmgfw.efi launched directly from a hard disk ESP hangs at "Start boot option"
+### 4. bootmgfw (bootaa64.efi) silently exits when launched outside a CD context
+
+Two variants observed:
+
+**From a hard disk ESP** — firmware loads bootmgfw successfully, then it
+"hangs at Start boot option" (original finding).
+
+**From the Shell at `FS1:\efi\boot\bootaa64.efi`** (UDF layer) — bootmgfw
+clears the screen, runs briefly, and returns to the Shell prompt with no
+visible error (2026-04-15 finding). Likely cause: the device path of
+FS1 ends in `VenMedia(GUID)` (synthetic UDF volume), not `CDROM(0x0)`,
+so the CD-ramdisk device class the ISO's BCD expects doesn't resolve.
+
+Either path points to the same root cause: the BCD on the ISO is
+configured for CD ramdisk boot. BCD modification with `hivex` (unexplored
+path C) is the way forward.
 
 We tried extracting `efi/boot/bootaa64.efi` (which IS bootmgfw.efi, verified
 via `strings`) + `efi/microsoft/boot/BCD` + `boot/boot.sdi` + `sources/boot.wim`
@@ -110,6 +132,8 @@ boot target has run.
 | 11 | Autounattend.xml on disk ESP | WinPE doesn't see ESP partitions (no drive letter) |
 | 12 | Autounattend.xml on third USB FAT image | Third USB device breaks QMP reliability |
 | 13 | Combined VirtIO + Autounattend ISO via genisoimage | Larger ISO (1.4 GB) changed USB enumeration timing, broke QMP |
+| 14 | Full-RFB VNC key-spam against cdboot (71 presses / 21 s) | cdboot ignores VNC input even with correct handshake |
+| 15 | `FS1:\efi\boot\bootaa64.efi` from Shell (FS1 as current device) | bootmgfw silently exits — BCD CD-ramdisk semantics don't match FS1's VenMedia device path |
 
 ## Promising Unexplored Paths
 
