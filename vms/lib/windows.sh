@@ -60,6 +60,11 @@ create_noprompt_iso() {
     local source_iso="$1"
     local output_iso="$2"
 
+    if ! check_xorriso; then
+        echo "    ERROR: xorriso not installed (apt install xorriso)" >&2
+        return 1
+    fi
+
     local workdir
     workdir=$(mktemp -d)
 
@@ -101,27 +106,34 @@ create_noprompt_iso() {
         return 1
     fi
 
-    # Rebuild the ISO with UDF + EFI boot support
+    # Rebuild the ISO with xorriso: El Torito EFI boot + GPT EFI System Partition.
+    # genisoimage produced an El Torito entry covering only the 1.7MB efisys FAT
+    # image, while the original Microsoft ISO's entry spans the full disc. UEFI
+    # firmware intermittently failed to discover setup files (boot.wim) through
+    # the tiny boot device. xorriso's -append_partition creates a GPT with an
+    # EFI System Partition entry, giving firmware a second reliable boot path.
     echo "    Rebuilding ISO with no-prompt boot + autounattend..."
-    local genisoimage_log
-    genisoimage_log=$(mktemp)
-    if ! genisoimage \
+    local xorriso_log
+    xorriso_log=$(mktemp)
+    local efisys_path="${workdir}/efi/microsoft/boot/efisys_noprompt.bin"
+    if ! xorriso -as mkisofs \
         -o "$output_iso" \
+        -V 'WIN11ARM64' \
         -iso-level 3 \
-        -udf \
-        -allow-limited-size \
-        -J -r \
-        -eltorito-alt-boot \
-        -e "efi/microsoft/boot/efisys_noprompt.bin" \
+        -J -joliet-long \
+        -R \
+        -e 'efi/microsoft/boot/efisys_noprompt.bin' \
         -no-emul-boot \
-        "$workdir" >"$genisoimage_log" 2>&1; then
-        echo "    ERROR: genisoimage failed to create ISO" >&2
-        cat "$genisoimage_log" >&2
-        rm -f "$genisoimage_log"
+        -append_partition 2 0xef "$efisys_path" \
+        -appended_part_as_gpt \
+        "$workdir" >"$xorriso_log" 2>&1; then
+        echo "    ERROR: xorriso failed to create ISO" >&2
+        cat "$xorriso_log" >&2
+        rm -f "$xorriso_log"
         _noprompt_cleanup
         return 1
     fi
-    rm -f "$genisoimage_log"
+    rm -f "$xorriso_log"
 
     # Verify output was created
     if [[ ! -f "$output_iso" ]]; then

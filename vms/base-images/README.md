@@ -70,7 +70,7 @@ sudo ./winvm.sh image build
 - VirtIO drivers ISO at `vms/.images/virtio-win.iso`
 - QEMU with KVM support (aarch64)
 - UEFI firmware: `/usr/share/qemu-efi-aarch64/QEMU_EFI.fd`
-- `genisoimage`, `7z` for building the modified Windows ISO
+- `xorriso`, `7z` for building the modified Windows ISO
 
 ## Validation Status
 
