@@ -53,20 +53,21 @@ windows_base_image_status() {
 
 # ─── Build Disk Seeding ───────────────────────────────────────────────
 
-# Seed a build disk with a small FAT32 EFI System Partition containing
-# startup.nsh and Autounattend.xml. The UEFI Shell finds startup.nsh on
-# this partition after cdboot.efi's "Press any key" times out.
+# Seed a build disk with a bootable EFI System Partition containing:
+#   \EFI\BOOT\BOOTAA64.EFI  — UEFI Shell (default boot target)
+#   \startup.nsh             — auto-executed by Shell, launches Windows
+#   \Autounattend.xml        — Windows unattended answer file
 #
-# Windows Setup's WillWipeDisk=true wipes this partition when it runs,
-# so the seed only exists during the initial boot.
+# Boot path: UEFI → disk ESP → Shell → startup.nsh → ISO's bootmgfw.
+# This avoids cdboot.efi's "Press any key" prompt entirely. cdboot
+# hangs on ARM64 (no timeout, VNC/sendkey can't reach it).
 #
-# We use the build disk (not the ISO) because:
-# - ISO's UDF filesystem is read-only (can't add files)
-# - ISO rebuild breaks El Torito full-disc boot extent
-# - cdboot_noprompt.efi crashes on ARM64
-# - QEMU sendkey/VNC don't reach USB keyboard on ARM64 virt
-# - Additional USB/virtio devices aren't enumerated by TianoCore
+# Windows Setup's WillWipeDisk=true wipes this partition when it runs.
+#
+# Requires: efi-shell-aa64 package (apt install efi-shell-aa64)
 # Args: disk_path
+UEFI_SHELL="/usr/share/efi-shell-aa64/shellaa64.efi"
+
 seed_build_disk() {
     local disk_path="$1"
 
@@ -75,33 +76,31 @@ seed_build_disk() {
         return 1
     fi
 
+    if [[ ! -f "$UEFI_SHELL" ]]; then
+        echo "    ERROR: UEFI Shell not found: $UEFI_SHELL" >&2
+        echo "    Install with: apt install efi-shell-aa64" >&2
+        return 1
+    fi
+
     local startup_nsh
     startup_nsh=$(mktemp)
-    # Launch the Windows Boot Manager from the ISO. On Windows 11 ARM64
-    # ISOs, \efi\boot\bootaa64.efi IS bootmgfw.efi (verified via strings):
-    # launching it bypasses cdboot.efi's "Press any key" prompt entirely.
-    # The BCD at \efi\microsoft\boot\BCD is found automatically.
-    #
-    # Filesystem numbering depends on enumeration order (build-disk ESP
-    # vs ISO UDF), so we try every candidate in turn. The first one that
-    # exists takes over the process — execution stops there.
+    # FS0 is our own ESP (contains this startup.nsh). The Windows ISO
+    # UDF volume appears as FS1 or later depending on enumeration order.
+    # bootaa64.efi on the ISO IS bootmgfw.efi (2.7MB, verified via
+    # strings "bootmgfw.pdb") — launching it goes straight into the
+    # Windows Boot Manager, reads BCD, and loads boot.wim.
     cat > "$startup_nsh" << 'STARTUP'
 @echo -off
-echo Launching Windows Boot Manager...
-FS0:\efi\boot\bootaa64.efi
+echo Launching Windows Boot Manager from ISO...
 FS1:\efi\boot\bootaa64.efi
 FS2:\efi\boot\bootaa64.efi
 FS3:\efi\boot\bootaa64.efi
+FS4:\efi\boot\bootaa64.efi
 echo ERROR: bootaa64.efi not found on any filesystem
-echo === filesystem map ===
 map -b
-echo === FS0 root ===
 ls FS0:\
-echo === FS1 root ===
 ls FS1:\
-echo === FS2 root ===
 ls FS2:\
-echo === FS3 root ===
 ls FS3:\
 STARTUP
 
@@ -120,6 +119,8 @@ STARTUP
     local mnt
     mnt=$(mktemp -d)
     mount "$loop_dev" "$mnt"
+    mkdir -p "$mnt/EFI/BOOT"
+    cp "$UEFI_SHELL" "$mnt/EFI/BOOT/BOOTAA64.EFI"
     cp "$startup_nsh" "$mnt/startup.nsh"
     cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
     umount "$mnt"
@@ -127,7 +128,7 @@ STARTUP
     losetup -d "$loop_dev"
     rm -f "$startup_nsh"
 
-    echo "    Seeded build disk with startup.nsh + Autounattend.xml"
+    echo "    Seeded build disk with UEFI Shell + startup.nsh + Autounattend.xml"
     return 0
 }
 

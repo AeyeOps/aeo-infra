@@ -353,14 +353,15 @@ cmd_image_build() {
 
     # ── PHASE 1: Boot from ISO, extract Windows image ──────────────────
     #
-    # Uses the ORIGINAL Microsoft ISO unmodified. cdboot.efi "Press any
-    # key" times out → UEFI Shell → finds startup.nsh on the build disk's
-    # seeded ESP → loads bootaa64.efi from the ISO → Windows Setup starts.
+    # The build disk's seeded ESP is bootindex=0 and contains UEFI Shell
+    # as \EFI\BOOT\BOOTAA64.EFI. UEFI launches Shell → auto-runs
+    # startup.nsh → launches bootmgfw from the ISO's UDF filesystem →
+    # Windows Setup starts. This bypasses cdboot.efi entirely (cdboot
+    # hangs on ARM64: no timeout, VNC/sendkey can't dismiss it).
     #
-    # WinPE boots from the ISO, discovers autounattend.xml on the USB drive,
-    # partitions the disk, extracts the WIM image (~8GB), sets up the EFI
-    # boot manager on disk, and reboots. We detect the reboot and STOP QEMU
-    # to prevent the reinstall loop.
+    # WinPE discovers Autounattend.xml on the ESP, partitions the disk,
+    # extracts the WIM image (~8GB), sets up the EFI boot manager, and
+    # reboots. We detect the reboot and STOP QEMU to prevent reinstall.
 
     echo ""
     echo "Phase 1: Extracting Windows image from ISO..."
@@ -388,13 +389,13 @@ cmd_image_build() {
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
         -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
-        -device "usb-storage,drive=cdrom0,bootindex=0,removable=on" \
+        -device "usb-storage,drive=cdrom0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
         -object "iothread,id=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
-        -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=1" \
+        -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=0" \
         -drive "file=${build_rom},if=pflash,unit=0,format=raw,readonly=on" \
         -drive "file=${build_vars},if=pflash,unit=1,format=raw" \
         -object "rng-random,id=rng0,filename=/dev/urandom" \
@@ -411,7 +412,7 @@ cmd_image_build() {
     local pid
     pid=$(cat "$build_pid")
     echo "  QEMU started (PID: $pid)"
-    echo "  Boot path: cdboot timeout → UEFI Shell → startup.nsh → bootaa64.efi"
+    echo "  Boot path: disk ESP → UEFI Shell → startup.nsh → ISO bootmgfw"
     echo ""
     printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 
