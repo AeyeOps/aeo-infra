@@ -273,6 +273,7 @@ cmd_image_build() {
     local build_vnc_ws="5709"
     local build_monitor="7199"
     local build_mac="02:aa:bb:cc:dd:ee"
+    local build_qmp="/run/shm/base-build-windows.qmp"
     local build_timeout=10800  # 3h soft cap; we warn but do not kill
     local stall_threshold=600  # warn if build disk unchanged for 10 min
 
@@ -287,6 +288,19 @@ cmd_image_build() {
         echo "  To rebuild, first run: sudo ./winvm.sh image destroy"
         exit 1
     fi
+
+    # Clean up any leftover build state from a previous failed run
+    if [[ -f "$build_pid" ]]; then
+        local old_pid
+        old_pid=$(cat "$build_pid")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            echo "  Killing leftover build QEMU (PID $old_pid)..."
+            kill -9 "$old_pid" 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+    rm -f "$build_pid" "$build_log" "$build_qmp" \
+          "$build_disk" "$build_vars" "$build_rom"
 
     # Check for Windows ISO
     if [[ ! -f "$iso_file" ]]; then
@@ -378,7 +392,7 @@ cmd_image_build() {
         -display "vnc=${build_vnc},websocket=${build_vnc_ws}" \
         -device ramfb \
         -monitor "telnet:localhost:${build_monitor},server,nowait,nodelay" \
-        -qmp "unix:/run/shm/base-build-windows.qmp,server,nowait" \
+        -qmp "unix:${build_qmp},server,nowait" \
         -daemonize \
         -D "$build_log" \
         -pidfile "$build_pid" \
@@ -419,7 +433,7 @@ cmd_image_build() {
     # VNC key events don't reach cdboot's ConIn.
     # QMP input-send-event goes through QEMU's full input dispatch
     # and reaches the USB keyboard, which cdboot polls.
-    local qmp_sock="/run/shm/base-build-windows.qmp"
+    local qmp_sock="$build_qmp"
     echo "  Waiting for cdboot prompt..."
     sleep 8
     echo "  Sending key via QMP to dismiss cdboot..."
