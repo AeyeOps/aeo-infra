@@ -79,14 +79,22 @@ seed_build_disk() {
     startup_nsh=$(mktemp)
     cat > "$startup_nsh" << 'STARTUP'
 @echo -off
+map -r
+echo.
 echo Searching for Windows Boot Manager...
-for %f in FS0 FS1 FS2 FS3 FS4 FS5
+for %f in FS0 FS1 FS2 FS3 FS4 FS5 FS6 FS7
   if exist %f:\efi\boot\bootaa64.efi then
-    echo Found at %f:\efi\boot\bootaa64.efi
+    echo Booting %f:\efi\boot\bootaa64.efi
     %f:\efi\boot\bootaa64.efi
   endif
+  if exist %f:\efi\microsoft\boot\bootmgfw.efi then
+    echo Booting %f:\efi\microsoft\boot\bootmgfw.efi
+    %f:\efi\microsoft\boot\bootmgfw.efi
+  endif
 endfor
-echo ERROR: bootaa64.efi not found
+echo ERROR: Windows Boot Manager not found on any filesystem
+echo Listing available filesystems:
+map -t fs
 STARTUP
 
     echo "    Creating GPT with EFI System Partition on build disk..."
