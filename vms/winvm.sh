@@ -348,9 +348,17 @@ cmd_image_build() {
         exit 1
     fi
 
-    # Create UEFI files
+    # Create UEFI files.
+    # IMPORTANT: `truncate -s 64M` on an already-64 MiB file is a no-op; it
+    # leaves the file contents intact. For a build we ALWAYS want a fresh
+    # NVRAM — stale boot variables from a previous failed build will poison
+    # TianoCore's boot-option retry behavior (cdboot.efi appears to hang,
+    # HARDDISK bootmgfw enters an infinite loop, etc.). See
+    # vms/base-images/DEBUG_NOTES.md §1 for the multi-day debug that found
+    # this.
     echo "Creating UEFI firmware files..."
     local uefi_source="/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
+    rm -f "$build_rom" "$build_vars"
     truncate -s 64M "$build_rom"
     dd if="$uefi_source" of="$build_rom" conv=notrunc 2>/dev/null
     truncate -s 64M "$build_vars"
