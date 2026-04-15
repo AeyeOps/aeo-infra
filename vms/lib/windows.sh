@@ -97,26 +97,22 @@ STARTUP
     echo "    Copying original ISO..."
     cp "$source_iso" "$output_iso"
 
-    echo "    Appending startup.nsh + Autounattend.xml to ISO 9660 tree..."
-    local xorriso_log
-    xorriso_log=$(mktemp)
-    # xorriso returns 32 (SORRY) because the El Torito boot image is hidden
-    # (not a named file in the ISO 9660 tree). The append still succeeds —
-    # the boot catalog stays intact at its original LBA.
-    xorriso -dev "$output_iso" \
-        -boot_image any replay \
-        -return_with SORRY 0 \
-        -map "$startup_nsh" /startup.nsh \
-        -map "$AUTOUNATTEND_XML" /Autounattend.xml \
-        -commit >"$xorriso_log" 2>&1
-    local rc=$?
-    if [[ $rc -ne 0 ]]; then
-        echo "    ERROR: xorriso append failed (exit $rc)" >&2
-        cat "$xorriso_log" >&2
-        rm -f "$startup_nsh" "$output_iso" "$xorriso_log"
+    # Mount the UDF filesystem of the ISO copy and add files directly.
+    # This puts startup.nsh on the UDF tree (visible as FS0: in UEFI Shell).
+    # The El Torito boot catalog is completely untouched.
+    echo "    Mounting UDF filesystem to add startup.nsh + Autounattend.xml..."
+    local mnt
+    mnt=$(mktemp -d)
+    if ! mount -t udf -o loop "$output_iso" "$mnt" 2>/dev/null; then
+        echo "    ERROR: Failed to mount UDF filesystem" >&2
+        rm -f "$startup_nsh"
+        rmdir "$mnt"
         return 1
     fi
-    rm -f "$xorriso_log"
+    cp "$startup_nsh" "$mnt/startup.nsh"
+    cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
+    umount "$mnt"
+    rmdir "$mnt"
     rm -f "$startup_nsh"
 
     echo "    Created: $output_iso"
