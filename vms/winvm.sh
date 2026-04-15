@@ -263,7 +263,7 @@ cmd_image_build() {
 
     local iso_file="${STORAGE_DIR}/win11arm64.iso"
     local virtio_iso="${STORAGE_DIR}/virtio-win.iso"
-    local build_iso="${STORAGE_DIR}/win11arm64-noprompt.iso"
+    local autounattend_img="${STORAGE_DIR}/autounattend.img"
     local build_disk="${STORAGE_DIR}/base-build-windows.img"
     local build_vars="${STORAGE_DIR}/base-build-windows.vars"
     local build_rom="${STORAGE_DIR}/base-build-windows.rom"
@@ -318,16 +318,14 @@ cmd_image_build() {
     # Create base image directory
     mkdir -p "$BASE_IMAGE_DIR"
 
-    # Build modified ISO (no "Press any key" prompt, autounattend.xml bundled)
-    if [[ ! -f "$build_iso" ]]; then
-        echo "Building no-prompt Windows ISO..."
-        if ! create_noprompt_iso "$iso_file" "$build_iso"; then
-            echo "Failed to create noprompt ISO. Cannot proceed." >&2
-            exit 1
-        fi
-        echo "  Created: $build_iso"
-    else
-        echo "  Using existing no-prompt ISO: $build_iso"
+    # Create autounattend FAT image (answer file on separate USB drive).
+    # We use the original Microsoft ISO unmodified — its El Torito boot entry
+    # spans the full disc, which is critical for reliable ARM64 UEFI boot.
+    # Rebuilding the ISO (genisoimage, xorriso) breaks this, causing intermittent
+    # hangs. Instead: original ISO + autounattend on USB + keystroke injection.
+    if ! create_autounattend_img "$autounattend_img"; then
+        echo "Failed to create autounattend image. Cannot proceed." >&2
+        exit 1
     fi
 
     # Create build disk (raw, 64G)
@@ -350,8 +348,27 @@ cmd_image_build() {
     ensure_nat_masquerade "$upstream"
     ensure_forward_rules "$BRIDGE_NAME" "$upstream"
 
+    # Sparse-aware allocated-bytes helper (returns 0 on error)
+    _disk_allocated_bytes() {
+        du --block-size=1 "$1" 2>/dev/null | cut -f1
+    }
+
+    local screen_ppm="/tmp/winbuild-latest.ppm"
+
+    # ── PHASE 1: Boot from ISO, extract Windows image ──────────────────
+    #
+    # Uses the ORIGINAL Microsoft ISO (unmodified — its El Torito boot entry
+    # spans the full disc, critical for ARM64 UEFI). Autounattend.xml is on a
+    # separate USB FAT image. "Press any key to boot from CD" is dismissed
+    # via QEMU monitor keystroke injection (background process).
+    #
+    # WinPE boots from the ISO, discovers autounattend.xml on the USB drive,
+    # partitions the disk, extracts the WIM image (~8GB), sets up the EFI
+    # boot manager on disk, and reboots. We detect the reboot and STOP QEMU
+    # to prevent the reinstall loop.
+
     echo ""
-    echo "Starting unattended Windows install..."
+    echo "Phase 1: Extracting Windows image from ISO..."
     echo ""
 
     qemu-system-aarch64 \
@@ -375,10 +392,12 @@ cmd_image_build() {
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
-        -drive "file=${build_iso},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=cdrom0,bootindex=0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
+        -drive "file=${autounattend_img},id=answer0,format=raw,cache=unsafe,readonly=on,if=none" \
+        -device "usb-storage,drive=answer0,removable=on" \
         -object "iothread,id=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
@@ -396,11 +415,125 @@ cmd_image_build() {
         exit 1
     fi
 
+    # Dismiss "Press any key to boot from CD" in the background
+    dismiss_press_any_key "$build_monitor" &
+    local keypress_pid=$!
+
     local pid
     pid=$(cat "$build_pid")
+    echo "  QEMU started (PID: $pid)"
+    echo ""
+    printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 
-    local screen_ppm="/tmp/winbuild-latest.ppm"
+    # Wait for WinPE to extract the image and reboot.
+    # Detect: disk peaked above 4GB then dropped below 2GB (sparse reclaim on reboot).
+    local elapsed=0
+    local peak_disk_bytes=0
+    local last_disk_bytes
+    last_disk_bytes=$(_disk_allocated_bytes "$build_disk")
+    while kill -0 "$pid" 2>/dev/null; do
+        local now_disk_bytes
+        now_disk_bytes=$(_disk_allocated_bytes "$build_disk")
 
+        if (( now_disk_bytes > peak_disk_bytes )); then
+            peak_disk_bytes=$now_disk_bytes
+        fi
+
+        # Detect first reboot: peak passed 4GB, now dropped below 2GB
+        if (( elapsed > 120 && peak_disk_bytes > 4*1024*1024*1024 && now_disk_bytes < 2*1024*1024*1024 )); then
+            echo ""
+            echo "  [*] First reboot detected (peak=${peak_disk_bytes}, now=${now_disk_bytes})"
+            echo "  [*] Stopping QEMU to remove ISO before next boot..."
+            echo "quit" | nc -q1 localhost "$build_monitor" >/dev/null 2>&1 || kill "$pid" 2>/dev/null || true
+            sleep 2
+            rm -f "$build_pid"
+            break
+        fi
+
+        # Progress line every 30s
+        if (( elapsed % 30 == 0 && elapsed > 0 )); then
+            local delta_bytes=$(( now_disk_bytes - last_disk_bytes ))
+            local rate_bps=$(( delta_bytes / 30 ))
+            local disk_h rate_h phase
+            disk_h=$(numfmt --to=iec --suffix=B "$now_disk_bytes" 2>/dev/null || echo "?")
+            rate_h=$(numfmt --to=iec --suffix=B/s "$rate_bps" 2>/dev/null || echo "?")
+
+            if (( elapsed < 60 )); then phase="uefi-boot"
+            elif (( rate_bps > 1024*1024 )); then phase="image-extraction"
+            elif (( rate_bps > 0 )); then phase="installing-windows"
+            else phase="reboot-or-config"
+            fi
+
+            printf "  %-8s  %-10s  %-12s  %-10s  %s\n" \
+                "$(printf '%dm%02ds' $((elapsed/60)) $((elapsed%60)))" \
+                "$disk_h" "" "$rate_h" "$phase"
+
+            last_disk_bytes=$now_disk_bytes
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    # Clean up keystroke injection background process
+    kill "$keypress_pid" 2>/dev/null; wait "$keypress_pid" 2>/dev/null || true
+
+    echo ""
+    echo "  Phase 1 complete (${elapsed}s). Image extracted to disk."
+
+    # ── PHASE 2: Boot from disk, complete install ──────────────────────
+    #
+    # Restart QEMU WITHOUT the Windows ISO. UEFI boots from the disk's
+    # EFI partition (WinPE set up the boot manager in phase 1). Windows
+    # continues through specialize → OOBE → FirstLogonCommands → shutdown.
+    # The VirtIO ISO stays attached for driver discovery during specialize.
+
+    echo ""
+    echo "Phase 2: Continuing install from disk (no ISO)..."
+    echo ""
+
+    rm -f "$build_log"
+
+    qemu-system-aarch64 \
+        -nodefaults \
+        -cpu host \
+        -smp "${WIN_CPUS},sockets=1,dies=1,cores=${WIN_CPUS},threads=1" \
+        -m "$WIN_RAM" \
+        -machine "type=virt,secure=off,gic-version=max,accel=kvm" \
+        -enable-kvm \
+        -smbios "type=1,serial=${WIN_SMBIOS_SERIAL}" \
+        -display "vnc=${build_vnc},websocket=${build_vnc_ws}" \
+        -device ramfb \
+        -monitor "telnet:localhost:${build_monitor},server,nowait,nodelay" \
+        -daemonize \
+        -D "$build_log" \
+        -pidfile "$build_pid" \
+        -name "base-build-windows" \
+        -serial pty \
+        -device "qemu-xhci" \
+        -device usb-kbd \
+        -device usb-tablet \
+        -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
+        -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
+        -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -device "usb-storage,drive=virtio0,removable=on" \
+        -object "iothread,id=io0" \
+        -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
+        -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
+        -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=0" \
+        -drive "file=${build_rom},if=pflash,unit=0,format=raw,readonly=on" \
+        -drive "file=${build_vars},if=pflash,unit=1,format=raw" \
+        -object "rng-random,id=rng0,filename=/dev/urandom" \
+        -device "virtio-rng-pci,rng=rng0" \
+        -rtc base=localtime
+
+    sleep 1
+
+    if [[ ! -f "$build_pid" ]]; then
+        echo "Failed to start QEMU for phase 2. Check $build_log"
+        exit 1
+    fi
+
+    pid=$(cat "$build_pid")
     echo "  QEMU started (PID: $pid)"
     echo ""
     echo "Watch progress:"
@@ -409,28 +542,17 @@ cmd_image_build() {
     echo "  Manual control: telnet localhost ${build_monitor}"
     echo "  Force stop:     echo quit | nc -q1 localhost ${build_monitor}"
     echo ""
-    echo "Waiting for unattended install to complete..."
+    echo "Waiting for install to complete and VM to shut down..."
     echo "  Soft cap: ${build_timeout}s (advisory only — VM will not be killed)"
     echo "  The VM shuts itself down when FirstLogonCommands finish."
     echo ""
     printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 
-    # Wait for VM to shut down (autounattend issues shutdown /s after setup).
-    # No hard kill: timeouts are advisory. If the install is taking too long,
-    # we warn but keep the VM alive so the user can inspect and decide.
-    # Sparse-aware allocated-bytes helper (returns 0 on error)
-    _disk_allocated_bytes() {
-        du --block-size=1 "$1" 2>/dev/null | cut -f1
-    }
-
-    local elapsed=0
+    # Wait for VM to shut down (FirstLogonCommands issue shutdown /s after setup).
     local soft_timeout_warned=0
-    local iso_ejected=0
-    local peak_disk_bytes=0
     local last_disk_mtime
     last_disk_mtime=$(stat -c %Y "$build_disk" 2>/dev/null || echo 0)
-    local last_disk_change=0
-    local last_disk_bytes
+    local last_disk_change=$elapsed
     last_disk_bytes=$(_disk_allocated_bytes "$build_disk")
     local start_disk_bytes=$last_disk_bytes
     while kill -0 "$pid" 2>/dev/null; do
@@ -443,23 +565,6 @@ cmd_image_build() {
             last_disk_change=$elapsed
         fi
         local since_change=$(( elapsed - last_disk_change ))
-
-        # Track peak disk allocation
-        if (( now_disk_bytes > peak_disk_bytes )); then
-            peak_disk_bytes=$now_disk_bytes
-        fi
-
-        # Eject Windows ISO after first reboot to prevent reinstall loop.
-        # Detect first reboot: disk grew past 4GB (image extraction happened),
-        # then dropped below 2GB (reboot + sparse reclaim). Eject once.
-        if (( iso_ejected == 0 && elapsed > 120 && peak_disk_bytes > 4*1024*1024*1024 && now_disk_bytes < 2*1024*1024*1024 )); then
-            echo ""
-            echo "  [*] First reboot detected — ejecting Windows ISO to prevent reinstall loop"
-            echo "eject cdrom0" | nc -q1 localhost "$build_monitor" >/dev/null 2>&1 || true
-            iso_ejected=1
-            echo "  [*] ISO ejected. Subsequent boots will use the installed disk."
-            echo ""
-        fi
 
         # Advisory soft timeout — warn once, do not kill
         if (( elapsed >= build_timeout && soft_timeout_warned == 0 )); then
@@ -487,19 +592,14 @@ cmd_image_build() {
             written_h=$(numfmt --to=iec --suffix=B "$written_bytes" 2>/dev/null || echo "?")
             rate_h=$(numfmt --to=iec --suffix=B/s "$rate_bps" 2>/dev/null || echo "?")
 
-            # Phase heuristic from elapsed + rate + stall
-            if (( elapsed < 60 )); then
-                phase="uefi-boot"
-            elif (( since_change >= stall_threshold )); then
+            if (( since_change >= stall_threshold )); then
                 phase="STALLED (no writes ${since_change}s)"
-            elif (( written_bytes < 200*1024*1024 )); then
-                phase="setup-loading"
             elif (( rate_bps > 1024*1024 )); then
-                phase="image-extraction"
-            elif (( rate_bps > 0 )); then
                 phase="installing-windows"
+            elif (( rate_bps > 0 )); then
+                phase="configuring"
             else
-                phase="reboot-or-config"
+                phase="reboot-or-idle"
             fi
 
             printf "  %-8s  %-10s  %-12s  %-10s  %s\n" \
@@ -526,7 +626,7 @@ cmd_image_build() {
     cp "$build_rom" "$BASE_WINDOWS_ROM"
 
     echo "Cleaning up build files..."
-    rm -f "$build_disk" "$build_vars" "$build_rom" "$build_log"
+    rm -f "$build_disk" "$build_vars" "$build_rom" "$build_log" "$autounattend_img"
 
     # Clean up TAP (will recreate for verification)
     if ip link show "$build_tap" &>/dev/null; then

@@ -26,11 +26,6 @@ check_genisoimage() {
     command -v genisoimage &>/dev/null
 }
 
-# Check if xorriso is installed (used for Windows noprompt ISO)
-check_xorriso() {
-    command -v xorriso &>/dev/null
-}
-
 # Check if storage directory exists
 check_storage_dir() {
     [[ -d "${STORAGE_DIR:-/storage}" ]]

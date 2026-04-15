@@ -51,99 +51,60 @@ windows_base_image_status() {
     fi
 }
 
-# ─── Modified Windows ISO ──────────────────────────────────────────────
+# ─── Autounattend FAT Image ───────────────────────────────────────────
 
-# Create a modified Windows ISO that auto-boots without "Press any key".
-# Swaps cdboot.efi for cdboot_noprompt.efi and bundles Autounattend.xml.
-# Args: source_iso, output_iso
-create_noprompt_iso() {
-    local source_iso="$1"
-    local output_iso="$2"
+# Create a small FAT image containing Autounattend.xml.
+# Attached as a second USB drive so Windows Setup discovers the answer file
+# on removable media. This avoids rebuilding the Windows ISO entirely —
+# the original Microsoft ISO's El Torito boot entry spans the full disc,
+# which is impossible to reproduce with genisoimage or xorriso (both create
+# entries covering only the small efisys FAT image, causing intermittent
+# UEFI boot hangs on ARM64).
+# Args: output_img
+create_autounattend_img() {
+    local output_img="$1"
 
-    if ! check_xorriso; then
-        echo "    ERROR: xorriso not installed (apt install xorriso)" >&2
+    if [[ ! -f "$AUTOUNATTEND_XML" ]]; then
+        echo "    ERROR: Autounattend.xml not found: $AUTOUNATTEND_XML" >&2
         return 1
     fi
 
-    local workdir
-    workdir=$(mktemp -d)
+    echo "    Creating autounattend FAT image..."
 
-    # Cleanup helper for error paths
-    _noprompt_cleanup() { rm -rf "$workdir"; }
+    # 2MB FAT12 image — smallest reliable size for USB enumeration
+    dd if=/dev/zero of="$output_img" bs=1M count=2 status=none
+    mkfs.fat -F 12 -n AUTOUNATTEND "$output_img" >/dev/null
 
-    # Extract the entire ISO
-    echo "    Extracting Windows ISO..."
-    if ! 7z x -o"$workdir" "$source_iso" >/dev/null; then
-        echo "    ERROR: Failed to extract ISO: $source_iso" >&2
-        _noprompt_cleanup
-        return 1
+    # Copy answer file into the FAT image using mcopy (mtools)
+    if command -v mcopy &>/dev/null; then
+        mcopy -i "$output_img" "$AUTOUNATTEND_XML" ::/Autounattend.xml
+    else
+        # Fallback: mount + copy (requires root, but we're already root for QEMU)
+        local mnt
+        mnt=$(mktemp -d)
+        mount -o loop "$output_img" "$mnt"
+        cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
+        umount "$mnt"
+        rmdir "$mnt"
     fi
 
-    # Verify required files exist in the extracted ISO
-    if [[ ! -f "${workdir}/efi/microsoft/boot/cdboot_noprompt.efi" ]]; then
-        echo "    ERROR: cdboot_noprompt.efi not found in ISO" >&2
-        _noprompt_cleanup
-        return 1
-    fi
-    if [[ ! -f "${workdir}/efi/microsoft/boot/efisys_noprompt.bin" ]]; then
-        echo "    ERROR: efisys_noprompt.bin not found in ISO" >&2
-        _noprompt_cleanup
-        return 1
-    fi
-
-    # Swap cdboot.efi with the no-prompt variant
-    if ! cp "${workdir}/efi/microsoft/boot/cdboot_noprompt.efi" \
-            "${workdir}/efi/microsoft/boot/cdboot.efi"; then
-        echo "    ERROR: Failed to swap cdboot.efi" >&2
-        _noprompt_cleanup
-        return 1
-    fi
-
-    # Add autounattend.xml at the root for Windows Setup discovery
-    if ! cp "$AUTOUNATTEND_XML" "${workdir}/Autounattend.xml"; then
-        echo "    ERROR: Failed to copy autounattend.xml" >&2
-        _noprompt_cleanup
-        return 1
-    fi
-
-    # Rebuild the ISO with xorriso: El Torito EFI boot + GPT EFI System Partition.
-    # genisoimage produced an El Torito entry covering only the 1.7MB efisys FAT
-    # image, while the original Microsoft ISO's entry spans the full disc. UEFI
-    # firmware intermittently failed to discover setup files (boot.wim) through
-    # the tiny boot device. xorriso's -append_partition creates a GPT with an
-    # EFI System Partition entry, giving firmware a second reliable boot path.
-    echo "    Rebuilding ISO with no-prompt boot + autounattend..."
-    local xorriso_log
-    xorriso_log=$(mktemp)
-    local efisys_path="${workdir}/efi/microsoft/boot/efisys_noprompt.bin"
-    if ! xorriso -as mkisofs \
-        -o "$output_iso" \
-        -V 'WIN11ARM64' \
-        -iso-level 3 \
-        -J -joliet-long \
-        -R \
-        -e 'efi/microsoft/boot/efisys_noprompt.bin' \
-        -no-emul-boot \
-        -append_partition 2 0xef "$efisys_path" \
-        -appended_part_as_gpt \
-        "$workdir" >"$xorriso_log" 2>&1; then
-        echo "    ERROR: xorriso failed to create ISO" >&2
-        cat "$xorriso_log" >&2
-        rm -f "$xorriso_log"
-        _noprompt_cleanup
-        return 1
-    fi
-    rm -f "$xorriso_log"
-
-    # Verify output was created
-    if [[ ! -f "$output_iso" ]]; then
-        echo "    ERROR: Output ISO not created: $output_iso" >&2
-        _noprompt_cleanup
-        return 1
-    fi
-
-    _noprompt_cleanup
+    echo "    Created: $output_img"
     return 0
+}
+
+# Send keystrokes to QEMU monitor to dismiss "Press any key to boot from CD".
+# The prompt appears ~5-15s after UEFI hands off to cdboot.efi and has a
+# ~5-8s window. We send Enter every 2s for 30s to reliably catch it.
+# Args: monitor_port
+dismiss_press_any_key() {
+    local monitor_port="$1"
+    local attempts=15  # 15 × 2s = 30s coverage
+
+    echo "    Sending keystrokes to dismiss 'Press any key' prompt..."
+    for (( i=0; i<attempts; i++ )); do
+        echo "sendkey ret" | nc -q1 localhost "$monitor_port" >/dev/null 2>&1 || true
+        sleep 2
+    done
 }
 
 # ─── Overlay Lifecycle ─────────────────────────────────────────────────
