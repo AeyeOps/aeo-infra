@@ -387,7 +387,7 @@ cmd_image_build() {
         -pidfile "$build_pid" \
         -name "base-build-windows" \
         -serial pty \
-        -device "qemu-xhci,p2=8,p3=8" \
+        -device "qemu-xhci" \
         -device usb-kbd \
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
@@ -397,7 +397,7 @@ cmd_image_build() {
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
         -drive "file=${autounattend_img},id=answer0,format=raw,cache=unsafe,readonly=on,if=none" \
-        -device "usb-storage,drive=answer0,removable=on" \
+        -device "virtio-blk-pci,drive=answer0" \
         -object "iothread,id=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
