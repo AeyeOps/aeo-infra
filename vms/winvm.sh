@@ -318,11 +318,10 @@ cmd_image_build() {
     # Create base image directory
     mkdir -p "$BASE_IMAGE_DIR"
 
-    # Create autounattend FAT image (answer file on separate USB drive).
-    # We use the original Microsoft ISO unmodified — its El Torito boot entry
-    # spans the full disc, which is critical for reliable ARM64 UEFI boot.
-    # cdboot_noprompt.efi crashes on ARM64, so we keep the original cdboot.efi
-    # and dismiss "Press any key" via VNC keystroke injection instead.
+    # Create autounattend + startup FAT image.
+    # Uses original Microsoft ISO unmodified (El Torito full-disc extent).
+    # cdboot.efi "Press any key" times out → UEFI Shell → startup.nsh
+    # boots Windows directly via bootaa64.efi, bypassing cdboot entirely.
     if ! create_autounattend_img "$autounattend_img"; then
         echo "Failed to create autounattend image. Cannot proceed." >&2
         exit 1
@@ -358,10 +357,10 @@ cmd_image_build() {
     # ── PHASE 1: Boot from ISO, extract Windows image ──────────────────
     #
     # Uses the ORIGINAL Microsoft ISO unmodified — its El Torito boot entry
-    # spans the full disc, which ARM64 UEFI requires. cdboot_noprompt.efi
-    # crashes on ARM64 so we keep the original cdboot.efi and dismiss
-    # "Press any key to boot from CD" via VNC keystroke injection.
-    # Autounattend.xml is on a separate USB FAT image.
+    # spans the full disc, which ARM64 UEFI requires. cdboot.efi shows
+    # "Press any key" which times out after ~8s. UEFI then drops to Shell
+    # which auto-runs startup.nsh from the autounattend USB, loading
+    # bootaa64.efi directly (bypassing cdboot entirely).
     #
     # WinPE boots from the ISO, discovers autounattend.xml on the USB drive,
     # partitions the disk, extracts the WIM image (~8GB), sets up the EFI
@@ -419,12 +418,7 @@ cmd_image_build() {
     local pid
     pid=$(cat "$build_pid")
     echo "  QEMU started (PID: $pid)"
-
-    # Dismiss "Press any key to boot from CD" via VNC key events
-    local vnc_port=$(( 5900 + ${build_vnc#:} ))
-    dismiss_press_any_key "$vnc_port" &
-    local keypress_pid=$!
-
+    echo "  Boot path: cdboot timeout → UEFI Shell → startup.nsh → bootaa64.efi"
     echo ""
     printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 
@@ -476,9 +470,6 @@ cmd_image_build() {
         sleep 5
         elapsed=$((elapsed + 5))
     done
-
-    # Clean up VNC keystroke injection background process
-    kill "$keypress_pid" 2>/dev/null; wait "$keypress_pid" 2>/dev/null || true
 
     echo ""
     echo "  Phase 1 complete (${elapsed}s). Image extracted to disk."

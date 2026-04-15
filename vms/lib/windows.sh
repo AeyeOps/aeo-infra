@@ -51,30 +51,21 @@ windows_base_image_status() {
     fi
 }
 
-# ─── VNC Keystroke Injection ───────────────────────────────────────────
+# ─── Autounattend + Startup FAT Image ─────────────────────────────────
 
-# Dismiss "Press any key to boot from CD" via VNC key events.
-# QEMU's HMP 'sendkey' doesn't reach USB keyboard on ARM64 virt machine.
-# VNC key events route through the display input layer, which works.
-# Args: vnc_port, [attempts]
-dismiss_press_any_key() {
-    local vnc_port="$1"
-    local attempts="${2:-15}"
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-    echo "    Sending VNC keystrokes to dismiss 'Press any key' prompt..."
-    for (( i=0; i<attempts; i++ )); do
-        python3 "${script_dir}/vnc-sendkey.py" localhost "$vnc_port" 2>/dev/null || true
-        sleep 2
-    done
-}
-
-# ─── Autounattend FAT Image ───────────────────────────────────────────
-
-# Create a small FAT image containing Autounattend.xml.
-# Attached as a second USB drive so Windows Setup discovers the answer file
-# on removable media (separate from the ISO to avoid rebuilding it).
+# Create a FAT image containing Autounattend.xml and startup.nsh.
+#
+# The image serves two purposes:
+# 1. Autounattend.xml: Windows Setup discovers it on removable media
+# 2. startup.nsh: UEFI Shell auto-executes it to boot Windows Setup
+#
+# Boot flow: cdboot.efi shows "Press any key" → times out → UEFI Shell
+# starts → finds startup.nsh → loads bootaa64.efi from ISO → Windows
+# Setup starts unattended. No key injection needed.
+#
+# We bypass cdboot.efi entirely because:
+# - cdboot_noprompt.efi crashes on ARM64
+# - QEMU sendkey/VNC keys don't reach USB keyboard on ARM64 virt
 # Args: output_img
 create_autounattend_img() {
     local output_img="$1"
@@ -84,28 +75,48 @@ create_autounattend_img() {
         return 1
     fi
 
-    echo "    Creating autounattend FAT image..."
+    echo "    Creating autounattend + startup FAT image..."
 
-    # 2MB FAT12 image — smallest reliable size for USB enumeration
+    # 2MB FAT12 image
     dd if=/dev/zero of="$output_img" bs=1M count=2 status=none
     mkfs.fat -F 12 -n AUNATTEND "$output_img" >/dev/null
 
-    # Copy answer file into the FAT image
+    # Create startup.nsh that boots Windows from the ISO.
+    # Try each filesystem in order — the ISO shows up as FSn: depending
+    # on USB enumeration order.
+    local startup_nsh
+    startup_nsh=$(mktemp)
+    cat > "$startup_nsh" << 'STARTUP'
+@echo -off
+echo Searching for Windows Boot Manager on mapped filesystems...
+for %f in FS0 FS1 FS2 FS3 FS4 FS5
+  if exist %f:\efi\boot\bootaa64.efi then
+    echo Found at %f:\efi\boot\bootaa64.efi - booting...
+    %f:\efi\boot\bootaa64.efi
+  endif
+endfor
+echo ERROR: Could not find bootaa64.efi on any filesystem
+STARTUP
+
+    # Copy files into the FAT image
     if command -v mcopy &>/dev/null; then
         mcopy -i "$output_img" "$AUTOUNATTEND_XML" ::/Autounattend.xml
+        mcopy -i "$output_img" "$startup_nsh" ::/startup.nsh
     else
-        # Fallback: mount + copy (requires root, but we're already root for QEMU)
         local mnt
         mnt=$(mktemp -d)
         if ! mount -o loop "$output_img" "$mnt"; then
             echo "    ERROR: Failed to mount FAT image" >&2
+            rm -f "$startup_nsh"
             rmdir "$mnt"
             return 1
         fi
         cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
+        cp "$startup_nsh" "$mnt/startup.nsh"
         umount "$mnt"
         rmdir "$mnt"
     fi
+    rm -f "$startup_nsh"
 
     echo "    Created: $output_img"
     return 0
