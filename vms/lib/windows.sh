@@ -77,17 +77,19 @@ seed_build_disk() {
 
     local startup_nsh
     startup_nsh=$(mktemp)
+    # Try direct paths — FS0 is typically CDROM (ISO 9660), FS1 is
+    # VenMedia (UDF) where Windows files live. Skip bootaa64.efi
+    # (it's cdboot.efi which hangs on ARM64 when launched from Shell).
     cat > "$startup_nsh" << 'STARTUP'
-@echo -off
-echo Searching for Windows Boot Manager (bootmgfw.efi)...
-for %f in FS0 FS1 FS2 FS3 FS4 FS5 FS6 FS7
-  if exist %f:\efi\microsoft\boot\bootmgfw.efi then
-    echo Booting %f:\efi\microsoft\boot\bootmgfw.efi
-    %f:\efi\microsoft\boot\bootmgfw.efi
-  endif
-endfor
-echo ERROR: bootmgfw.efi not found on any filesystem
-map -t fs
+echo Booting Windows Setup...
+FS1:\efi\microsoft\boot\bootmgfw.efi
+FS0:\efi\microsoft\boot\bootmgfw.efi
+FS1:\bootmgr.efi
+FS0:\bootmgr.efi
+FS2:\efi\microsoft\boot\bootmgfw.efi
+FS3:\efi\microsoft\boot\bootmgfw.efi
+echo ERROR: Could not find Windows Boot Manager
+map
 STARTUP
 
     echo "    Creating GPT with EFI System Partition on build disk..."
