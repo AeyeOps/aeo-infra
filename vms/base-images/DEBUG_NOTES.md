@@ -134,6 +134,7 @@ boot target has run.
 | 13 | Combined VirtIO + Autounattend ISO via genisoimage | Larger ISO (1.4 GB) changed USB enumeration timing, broke QMP |
 | 14 | Full-RFB VNC key-spam against cdboot (71 presses / 21 s) | cdboot ignores VNC input even with correct handshake |
 | 15 | `FS1:\efi\boot\bootaa64.efi` from Shell (FS1 as current device) | bootmgfw silently exits — BCD CD-ramdisk semantics don't match FS1's VenMedia device path |
+| 16 | Fresh GPT+FAT32 ESP on SCSI disk with unmodified ISO BCD + bootaa64.efi + boot.wim + boot.sdi, no ISO attached | Firmware auto-boots the ESP, bootmgfw exits silently → falls through to Shell (same as #10). Manually re-invoking from Shell produces a hang (60 s+ with no screen update) rather than silent exit — bootmgfw appears to spin waiting on a device reference in BCD that doesn't resolve on this non-CD media. |
 
 ## Promising Unexplored Paths
 
@@ -166,6 +167,35 @@ can read and modify hives on Linux. Rewrite the boot device paths from
 
 wimboot is a minimal bootloader that reads WIM files directly — no BCD,
 no ramdisk semantics. Much simpler than bootmgfw.
+
+### E. Skip installation entirely — start from a prebuilt Windows ARM64 VHDX
+
+Microsoft publishes ARM64 Windows evaluation images as VHDX (Windows
+Insider Program, Windows Dev Kit). These are already installed and
+generalized — no "Windows Setup" phase required, so the entire
+cdboot/bootmgfw/BCD rabbit hole becomes irrelevant.
+
+Workflow:
+
+1. Download the official ARM64 VHDX from the Windows Insider ARM64 page.
+2. `qemu-img convert -f vhdx -O raw <in>.vhdx base.img` (or attach VHDX
+   directly — QEMU supports it).
+3. Inject customizations offline via `libguestfs` + `hivex`:
+   - Enable OpenSSH Server via `Setup-Service` and registry keys.
+   - Drop a FirstLogonCommands / RunOnce script that installs Tailscale
+     and sets a static IP.
+   - Optionally place a small `unattend.xml` at
+     `C:\Windows\Panther\unattend.xml` or `C:\Windows\System32\Sysprep\`.
+4. Boot the modified image — customizations run on first login.
+
+This removes the need to drive Windows Setup at all. The same
+`winvm.sh image build` target just becomes "fetch VHDX, inject
+customizations, mark as ready" — fully offline, no QEMU input
+injection, no UEFI Shell gymnastics.
+
+Trade-off: you're bound to the image Microsoft ships (version, edition,
+preinstalled bloat). For a dev/test base image this is usually a good
+trade; for reproducible production images, it isn't.
 
 ## Key Discovery: the "right" minimal path
 
