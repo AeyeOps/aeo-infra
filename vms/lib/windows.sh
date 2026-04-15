@@ -91,17 +91,18 @@ seed_build_disk() {
     # Windows Boot Manager, reads BCD, and loads boot.wim.
     cat > "$startup_nsh" << 'STARTUP'
 @echo -off
+echo Connecting all drivers (USB enumeration)...
+connect -r
+map -u
 echo Launching Windows Boot Manager from ISO...
 FS1:\efi\boot\bootaa64.efi
 FS2:\efi\boot\bootaa64.efi
 FS3:\efi\boot\bootaa64.efi
 FS4:\efi\boot\bootaa64.efi
+FS5:\efi\boot\bootaa64.efi
+FS6:\efi\boot\bootaa64.efi
 echo ERROR: bootaa64.efi not found on any filesystem
 map -b
-ls FS0:\
-ls FS1:\
-ls FS2:\
-ls FS3:\
 STARTUP
 
     echo "    Creating GPT with EFI System Partition on build disk..."
