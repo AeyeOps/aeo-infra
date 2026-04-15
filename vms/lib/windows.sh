@@ -66,8 +66,8 @@ create_autounattend_img() {
         return 1
     fi
 
-    # 2MB FAT16 image — minimal but valid
-    dd if=/dev/zero of="$img_path" bs=1M count=2 2>/dev/null
+    # 16MB FAT16 image (minimum viable size for FAT16)
+    dd if=/dev/zero of="$img_path" bs=1M count=16 2>/dev/null
     mkfs.fat -F 16 -n AUNATTEND "$img_path" >/dev/null
 
     local mnt

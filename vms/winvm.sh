@@ -300,6 +300,14 @@ cmd_image_build() {
             sleep 1
         fi
     fi
+    # Also kill by name in case PID file was already deleted
+    local stale_pid
+    stale_pid=$(pgrep -f "qemu-system.*base-build-windows" 2>/dev/null || true)
+    if [[ -n "$stale_pid" ]]; then
+        echo "  Killing stale build QEMU (PID $stale_pid)..."
+        kill -9 $stale_pid 2>/dev/null || true
+        sleep 1
+    fi
     rm -f "$build_pid" "$build_log" "$build_qmp" \
           "$build_disk" "$build_vars" "$build_rom" "$autounattend_img"
 
