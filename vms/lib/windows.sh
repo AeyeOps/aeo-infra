@@ -51,79 +51,23 @@ windows_base_image_status() {
     fi
 }
 
-# ─── Noprompt ISO (binary patch) ──────────────────────────────────────
+# ─── VNC Keystroke Injection ───────────────────────────────────────────
 
-# Create a noprompt Windows ISO by binary-patching the El Torito boot image.
-# The original Microsoft ISO's El Torito entry spans the full disc (~7.3GB),
-# which ARM64 UEFI firmware requires to discover boot.wim. Rebuilding the
-# ISO (genisoimage, xorriso) produces entries covering only the 1.7MB efisys
-# FAT image, causing intermittent boot hangs.
-#
-# Instead, we copy the original ISO and overwrite the efisys.bin bytes at
-# the El Torito LBA with efisys_noprompt.bin (same size, same offset).
-# This eliminates "Press any key to boot from CD" while preserving the
-# full-disc boot extent.
-# Args: source_iso, output_iso
-create_noprompt_iso() {
-    local source_iso="$1"
-    local output_iso="$2"
+# Dismiss "Press any key to boot from CD" via VNC key events.
+# QEMU's HMP 'sendkey' doesn't reach USB keyboard on ARM64 virt machine.
+# VNC key events route through the display input layer, which works.
+# Args: vnc_port, [attempts]
+dismiss_press_any_key() {
+    local vnc_port="$1"
+    local attempts="${2:-15}"
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-    # Extract both efisys variants to compare sizes
-    local workdir
-    workdir=$(mktemp -d)
-
-    echo "    Extracting efisys boot images for comparison..."
-    if ! 7z e -o"$workdir" "$source_iso" \
-        efi/microsoft/boot/efisys.bin \
-        efi/microsoft/boot/efisys_noprompt.bin >/dev/null 2>&1; then
-        echo "    ERROR: Failed to extract efisys files from ISO" >&2
-        rm -rf "$workdir"
-        return 1
-    fi
-
-    local efisys_size efisys_noprompt_size
-    efisys_size=$(stat -c '%s' "${workdir}/efisys.bin" 2>/dev/null)
-    efisys_noprompt_size=$(stat -c '%s' "${workdir}/efisys_noprompt.bin" 2>/dev/null)
-
-    if [[ "$efisys_size" != "$efisys_noprompt_size" ]]; then
-        echo "    ERROR: efisys.bin ($efisys_size) and efisys_noprompt.bin ($efisys_noprompt_size) differ in size" >&2
-        rm -rf "$workdir"
-        return 1
-    fi
-
-    # Find the byte offset of efisys.bin in the ISO via El Torito catalog
-    local boot_lba
-    boot_lba=$(xorriso -indev "$source_iso" -report_el_torito plain 2>&1 \
-        | grep "El Torito boot img" | awk '{print $NF}')
-
-    if [[ -z "$boot_lba" ]]; then
-        echo "    ERROR: Could not find El Torito boot image LBA" >&2
-        rm -rf "$workdir"
-        return 1
-    fi
-
-    local byte_offset=$(( boot_lba * 2048 ))
-    echo "    El Torito boot image at LBA $boot_lba (byte offset $byte_offset)"
-
-    # Verify the bytes at that offset match efisys.bin
-    if ! cmp -s <(dd if="$source_iso" bs=1 skip="$byte_offset" count="$efisys_size" 2>/dev/null) \
-                "${workdir}/efisys.bin"; then
-        echo "    ERROR: ISO bytes at offset $byte_offset don't match efisys.bin" >&2
-        rm -rf "$workdir"
-        return 1
-    fi
-
-    # Copy original ISO and patch the boot image in-place
-    echo "    Copying original ISO (preserving El Torito full-disc extent)..."
-    cp "$source_iso" "$output_iso"
-
-    echo "    Patching efisys.bin → efisys_noprompt.bin at offset $byte_offset..."
-    dd if="${workdir}/efisys_noprompt.bin" of="$output_iso" \
-        bs=1 seek="$byte_offset" conv=notrunc status=none
-
-    rm -rf "$workdir"
-    echo "    Created: $output_iso"
-    return 0
+    echo "    Sending VNC keystrokes to dismiss 'Press any key' prompt..."
+    for (( i=0; i<attempts; i++ )); do
+        python3 "${script_dir}/vnc-sendkey.py" localhost "$vnc_port" 2>/dev/null || true
+        sleep 2
+    done
 }
 
 # ─── Autounattend FAT Image ───────────────────────────────────────────

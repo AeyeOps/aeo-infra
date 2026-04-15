@@ -263,7 +263,6 @@ cmd_image_build() {
 
     local iso_file="${STORAGE_DIR}/win11arm64.iso"
     local virtio_iso="${STORAGE_DIR}/virtio-win.iso"
-    local build_iso="${STORAGE_DIR}/win11arm64-noprompt.iso"
     local autounattend_img="${STORAGE_DIR}/autounattend.img"
     local build_disk="${STORAGE_DIR}/base-build-windows.img"
     local build_vars="${STORAGE_DIR}/base-build-windows.vars"
@@ -319,21 +318,11 @@ cmd_image_build() {
     # Create base image directory
     mkdir -p "$BASE_IMAGE_DIR"
 
-    # Build noprompt ISO (binary-patches efisys.bin in a copy of the original).
-    # This preserves the original El Torito full-disc boot extent while
-    # eliminating "Press any key to boot from CD".
-    if [[ ! -f "$build_iso" ]]; then
-        echo "Building no-prompt Windows ISO..."
-        if ! create_noprompt_iso "$iso_file" "$build_iso"; then
-            echo "Failed to create noprompt ISO. Cannot proceed." >&2
-            exit 1
-        fi
-    else
-        echo "  Using existing no-prompt ISO: $build_iso"
-    fi
-
     # Create autounattend FAT image (answer file on separate USB drive).
-    # Windows Setup discovers Autounattend.xml on removable media.
+    # We use the original Microsoft ISO unmodified — its El Torito boot entry
+    # spans the full disc, which is critical for reliable ARM64 UEFI boot.
+    # cdboot_noprompt.efi crashes on ARM64, so we keep the original cdboot.efi
+    # and dismiss "Press any key" via VNC keystroke injection instead.
     if ! create_autounattend_img "$autounattend_img"; then
         echo "Failed to create autounattend image. Cannot proceed." >&2
         exit 1
@@ -368,10 +357,11 @@ cmd_image_build() {
 
     # ── PHASE 1: Boot from ISO, extract Windows image ──────────────────
     #
-    # Uses a binary-patched copy of the Microsoft ISO (efisys_noprompt.bin
-    # overwrites efisys.bin at the El Torito LBA, preserving the full-disc
-    # boot extent that ARM64 UEFI requires). Autounattend.xml is on a
-    # separate USB FAT image that Windows Setup discovers on removable media.
+    # Uses the ORIGINAL Microsoft ISO unmodified — its El Torito boot entry
+    # spans the full disc, which ARM64 UEFI requires. cdboot_noprompt.efi
+    # crashes on ARM64 so we keep the original cdboot.efi and dismiss
+    # "Press any key to boot from CD" via VNC keystroke injection.
+    # Autounattend.xml is on a separate USB FAT image.
     #
     # WinPE boots from the ISO, discovers autounattend.xml on the USB drive,
     # partitions the disk, extracts the WIM image (~8GB), sets up the EFI
@@ -403,7 +393,7 @@ cmd_image_build() {
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
-        -drive "file=${build_iso},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=cdrom0,bootindex=0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
@@ -429,6 +419,12 @@ cmd_image_build() {
     local pid
     pid=$(cat "$build_pid")
     echo "  QEMU started (PID: $pid)"
+
+    # Dismiss "Press any key to boot from CD" via VNC key events
+    local vnc_port=$(( 5900 + ${build_vnc#:} ))
+    dismiss_press_any_key "$vnc_port" &
+    local keypress_pid=$!
+
     echo ""
     printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 
@@ -480,6 +476,9 @@ cmd_image_build() {
         sleep 5
         elapsed=$((elapsed + 5))
     done
+
+    # Clean up VNC keystroke injection background process
+    kill "$keypress_pid" 2>/dev/null; wait "$keypress_pid" 2>/dev/null || true
 
     echo ""
     echo "  Phase 1 complete (${elapsed}s). Image extracted to disk."
