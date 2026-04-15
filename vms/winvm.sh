@@ -340,9 +340,13 @@ cmd_image_build() {
     # Create base image directory
     mkdir -p "$BASE_IMAGE_DIR"
 
-    # Create build disk (raw, blank — Windows Setup partitions it)
+    # Create build disk with UEFI Shell on ESP
     echo "Creating 64G build disk..."
     qemu-img create -f raw "$build_disk" 64G
+    if ! seed_build_disk "$build_disk"; then
+        echo "Failed to seed build disk. Cannot proceed." >&2
+        exit 1
+    fi
 
     # Create Autounattend USB image for WinPE to discover
     if ! create_autounattend_img "$autounattend_img"; then
@@ -375,20 +379,23 @@ cmd_image_build() {
 
     # ── PHASE 1: Boot from ISO, extract Windows image ──────────────────
     #
-    # The build disk's seeded ESP is bootindex=0 and contains UEFI Shell
-    # as \EFI\BOOT\BOOTAA64.EFI. UEFI launches Shell → auto-runs
-    # startup.nsh → launches bootmgfw from the ISO's UDF filesystem →
-    # Windows Setup starts. This bypasses cdboot.efi entirely (cdboot
-    # hangs on ARM64: no timeout, VNC/sendkey can't dismiss it).
+    # cdboot.efi on ARM64 hangs at "Press any key" (no timeout, and
+    # neither VNC, HMP sendkey, nor QMP input-send-event can reach it).
     #
-    # WinPE discovers Autounattend.xml on the ESP, partitions the disk,
-    # extracts the WIM image (~8GB), sets up the EFI boot manager, and
-    # reboots. We detect the reboot and STOP QEMU to prevent reinstall.
+    # Workaround: start QEMU WITHOUT the Windows ISO so cdboot never
+    # runs. The build disk's ESP (with UEFI Shell) boots instead. Then
+    # hot-plug the ISO via QEMU monitor and use VNC to type Shell
+    # commands that launch bootmgfw.efi from the ISO's UDF filesystem.
+    #
+    # WinPE discovers Autounattend.xml on the USB drive, partitions the
+    # disk, extracts the WIM image, and reboots. We detect the reboot
+    # and STOP QEMU to prevent the reinstall loop.
 
     echo ""
     echo "Phase 1: Extracting Windows image from ISO..."
     echo ""
 
+    # Start QEMU WITHOUT Windows ISO — only VirtIO drivers and Autounattend
     qemu-system-aarch64 \
         -nodefaults \
         -cpu host \
@@ -400,7 +407,6 @@ cmd_image_build() {
         -display "vnc=${build_vnc},websocket=${build_vnc_ws}" \
         -device ramfb \
         -monitor "telnet:localhost:${build_monitor},server,nowait,nodelay" \
-        -qmp "unix:${build_qmp},server,nowait" \
         -daemonize \
         -D "$build_log" \
         -pidfile "$build_pid" \
@@ -411,8 +417,6 @@ cmd_image_build() {
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
-        -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
-        -device "usb-storage,drive=cdrom0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
         -drive "file=${autounattend_img},id=aua0,format=raw,cache=unsafe,readonly=on,if=none" \
@@ -420,7 +424,7 @@ cmd_image_build() {
         -object "iothread,id=io0" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
-        -device "scsi-hd,drive=data0,bus=scsi0.0" \
+        -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=0" \
         -drive "file=${build_rom},if=pflash,unit=0,format=raw,readonly=on" \
         -drive "file=${build_vars},if=pflash,unit=1,format=raw" \
         -object "rng-random,id=rng0,filename=/dev/urandom" \
@@ -438,44 +442,50 @@ cmd_image_build() {
     pid=$(cat "$build_pid")
     echo "  QEMU started (PID: $pid)"
 
-    # Dismiss cdboot.efi's "Press any key to boot from CD" prompt.
-    # HMP sendkey sends PS/2 scancodes (no PS/2 on ARM64 virt).
-    # VNC key events don't reach cdboot's ConIn.
-    # QMP input-send-event goes through QEMU's full input dispatch
-    # and reaches the USB keyboard, which cdboot polls.
-    local qmp_sock="$build_qmp"
-    echo "  Dismissing cdboot via QMP key injection..."
-    # Send keys repeatedly from 5s to 25s — covers the window where
-    # cdboot's "Press any key" prompt appears during UEFI boot.
+    # Wait for UEFI Shell to boot from the ESP
+    echo "  Waiting for UEFI Shell..."
+    sleep 8
+
+    # Hot-plug Windows ISO as USB storage
+    echo "  Hot-plugging Windows ISO..."
+    echo "drive_add 0 id=cdrom0,file=${iso_file},format=raw,readonly=on,media=cdrom" \
+        | nc -q1 localhost "$build_monitor" >/dev/null 2>&1
+    sleep 1
+    echo "device_add usb-storage,drive=cdrom0,removable=on,id=usb-cdrom0" \
+        | nc -q1 localhost "$build_monitor" >/dev/null 2>&1
+    sleep 2
+
+    # Type Shell commands via VNC to discover and boot from the ISO
+    local vnc_port=$((5900 + ${build_vnc#:}))
+    echo "  Launching Windows Boot Manager via UEFI Shell..."
     python3 -c "
-import socket, json, time, sys
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect('${qmp_sock}')
-s.settimeout(5)
-s.recv(4096)  # greeting
-s.sendall(json.dumps({'execute': 'qmp_capabilities'}).encode() + b'\n')
-s.recv(4096)  # response
-def send_key():
-    cmd = {'execute': 'input-send-event', 'arguments': {'events': [
-        {'type': 'key', 'data': {'down': True, 'key': {'type': 'qcode', 'data': 'ret'}}}
-    ]}}
-    s.sendall(json.dumps(cmd).encode() + b'\n')
-    s.recv(4096)
-    time.sleep(0.05)
-    cmd['arguments']['events'][0]['data']['down'] = False
-    s.sendall(json.dumps(cmd).encode() + b'\n')
-    s.recv(4096)
-# Wait for UEFI to reach cdboot, then spam keys
-time.sleep(5)
-for i in range(20):
-    send_key()
-    sys.stdout.write('.')
-    sys.stdout.flush()
-    time.sleep(1)
-print()
-s.close()
+import socket, struct, time
+
+def vnc_type(host, port, text):
+    KEYSYM = {'\n': 0xff0d, ' ': 0x20, '\\\\': 0x5c, ':': 0x3a, '/': 0x2f, '-': 0x2d, '.': 0x2e, '_': 0x5f}
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect((host, port))
+    s.recv(12); s.send(b'RFB 003.008\n')
+    n = s.recv(1)[0]; s.recv(n); s.send(bytes([1]))
+    s.recv(4); s.send(b'\x01')
+    si = s.recv(24); nl = struct.unpack('>I', si[20:24])[0]; s.recv(nl)
+    for ch in text:
+        ks = KEYSYM.get(ch, ord(ch))
+        s.send(struct.pack('>BBxxI', 4, 1, ks)); time.sleep(0.02)
+        s.send(struct.pack('>BBxxI', 4, 0, ks)); time.sleep(0.02)
+    s.close()
+
+vnc_type('127.0.0.1', ${vnc_port}, 'connect -r\n')
+time.sleep(3)
+vnc_type('127.0.0.1', ${vnc_port}, 'map -u\n')
+time.sleep(2)
+# Try each filesystem — bootaa64.efi on the ISO is bootmgfw.efi
+for fs in ['FS1', 'FS2', 'FS3', 'FS4', 'FS5']:
+    vnc_type('127.0.0.1', ${vnc_port}, fs + ':\\\\efi\\\\boot\\\\bootaa64.efi\n')
+    time.sleep(3)
 "
-    echo "  Boot path: cdboot → QMP keypress → Windows Setup"
+    echo "  Boot path: UEFI Shell → hot-plug ISO → bootmgfw → Windows Setup"
     echo ""
     printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 

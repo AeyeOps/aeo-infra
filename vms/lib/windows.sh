@@ -81,6 +81,42 @@ create_autounattend_img() {
     return 0
 }
 
+# Seed a build disk with a bootable EFI System Partition containing
+# UEFI Shell as the default boot target.
+# Args: disk_path
+UEFI_SHELL="/usr/share/efi-shell-aa64/shellaa64.efi"
+
+seed_build_disk() {
+    local disk_path="$1"
+
+    if [[ ! -f "$UEFI_SHELL" ]]; then
+        echo "    ERROR: UEFI Shell not found: $UEFI_SHELL" >&2
+        echo "    Install with: apt install efi-shell-aa64" >&2
+        return 1
+    fi
+
+    echo "    Creating GPT with EFI System Partition on build disk..."
+
+    sgdisk -Z "$disk_path" >/dev/null 2>&1
+    sgdisk -n 1:2048:+64M -t 1:ef00 -c 1:ESP "$disk_path" >/dev/null 2>&1
+
+    local loop_dev
+    loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit $((64*1024*1024)) "$disk_path")
+    mkfs.fat -F 32 -n ESP "$loop_dev" >/dev/null
+
+    local mnt
+    mnt=$(mktemp -d)
+    mount "$loop_dev" "$mnt"
+    mkdir -p "$mnt/EFI/BOOT"
+    cp "$UEFI_SHELL" "$mnt/EFI/BOOT/BOOTAA64.EFI"
+    umount "$mnt"
+    rmdir "$mnt"
+    losetup -d "$loop_dev"
+
+    echo "    Seeded build disk with UEFI Shell"
+    return 0
+}
+
 # ─── Overlay Lifecycle ─────────────────────────────────────────────────
 
 # Create instant overlay from base image
