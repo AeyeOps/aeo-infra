@@ -387,7 +387,7 @@ cmd_image_build() {
         -pidfile "$build_pid" \
         -name "base-build-windows" \
         -serial pty \
-        -device "qemu-xhci" \
+        -device "qemu-xhci,p2=8,p3=8" \
         -device usb-kbd \
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
