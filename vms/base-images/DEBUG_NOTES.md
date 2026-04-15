@@ -159,58 +159,42 @@ This path avoids the cdboot-input-injection problem entirely. The remaining
 work is finding a Shell command sequence that successfully launches Windows
 Setup despite the CD-ROM filesystem access limitation.
 
-## Reference: Working full-RFB VNC client
+## Debug Tooling in This Directory
 
-```python
-#!/usr/bin/env python3
-"""Full RFB 3.8 client. Handshake before sending keys is mandatory."""
-import socket, struct, time, sys
+- **`launch-minimal-debug.sh`** — starts the minimal QEMU config that
+  reliably reaches the embedded UEFI Shell. No QMP, no extra USB, no
+  `bootindex`. VNC on `:2` (port 5902). Uses firmware/disk in `/tmp/winboot/`.
+- **`vnc_full.py`** — full-RFB 3.8 client. Both `--type TEXT` (with shift
+  handling for uppercase/symbols) and `--screenshot PATH.ppm`. Does the
+  complete handshake-plus-drain sequence required for key events to
+  actually reach the guest.
 
-def vnc_type(host, port, text):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(5)
-    s.connect((host, port))
-    # Version
-    s.recv(12); s.sendall(b"RFB 003.008\n")
-    # Security
-    n = s.recv(1)[0]; s.recv(n); s.sendall(bytes([1]))
-    if struct.unpack(">I", s.recv(4))[0] != 0:
-        raise RuntimeError("auth failed")
-    # ClientInit
-    s.sendall(b"\x01")
-    # ServerInit
-    si = s.recv(24)
-    w, h = struct.unpack(">HH", si[:4])
-    nl = struct.unpack(">I", si[20:24])[0]
-    s.recv(nl)
-    # SetPixelFormat
-    s.sendall(b"\x00\x00\x00\x00" +
-        struct.pack(">BBBBHHHBBBxxx", 32, 24, 0, 1, 255, 255, 255, 16, 8, 0))
-    # SetEncodings (Raw)
-    s.sendall(struct.pack(">BxHI", 2, 1, 0))
-    # FramebufferUpdateRequest
-    s.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, w, h))
-    # Drain first framebuffer update
-    time.sleep(0.5)
-    try:
-        s.settimeout(2); s.recv(65536)
-    except socket.timeout:
-        pass
-    s.settimeout(5)
-    # KEY EVENTS
-    KS = {'\n': 0xff0d, ' ': 0x20, '\\': 0x5c, ':': 0x3a, '/': 0x2f,
-          '-': 0x2d, '.': 0x2e, '_': 0x5f}
-    for ch in text:
-        k = KS.get(ch, ord(ch))
-        s.sendall(struct.pack(">BBxxI", 4, 1, k)); time.sleep(0.03)
-        s.sendall(struct.pack(">BBxxI", 4, 0, k)); time.sleep(0.03)
-    time.sleep(0.5)
-    s.close()
+Typical debug loop:
+```bash
+./launch-minimal-debug.sh            # background-able; VNC on 5902
+sleep 15                             # let cdboot time out → UEFI Shell
+./vnc_full.py --port 5902 --screenshot /tmp/s0.ppm
+./vnc_full.py --port 5902 --type 'bcfg boot dump -v\n'
+sleep 1
+./vnc_full.py --port 5902 --screenshot /tmp/s1.ppm
 ```
+
+## Mapping Table Seen in Minimal Config (2026-04-15)
+
+With Windows ISO on USB + blank SCSI disk, the Shell's `map` yields:
+
+| Entry | Alias | Device path | Notes |
+|-------|-------|-------------|-------|
+| FS0 | `CD0b0a` / BLK1 | `USB(0x1,0x0)/CDROM(0x0)` | ISO 9660 layer |
+| FS1 | `HD0b0` / BLK2 | `USB(0x1,0x0)/VenMedia(C5BD4D42…)` | UDF layer |
+| BLK0 | — | `USB(0x1,0x0)` | Raw USB device |
+| BLK3 | — | `Scsi(0x0,0x0)` | Blank build disk |
 
 ## Related Files
 
 - `vms/winvm.sh` — main build script (`cmd_image_build` ~line 261)
 - `vms/lib/windows.sh` — `seed_build_disk`, base image helpers
 - `vms/base-images/autounattend.xml` — unattended answer file
+- `vms/base-images/launch-minimal-debug.sh` — minimal QEMU for Shell experiments
+- `vms/base-images/vnc_full.py` — full-RFB client (typing + screenshots)
 - `/usr/share/efi-shell-aa64/shellaa64.efi` — UEFI Shell binary (`apt install efi-shell-aa64`)
