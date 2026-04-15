@@ -266,6 +266,7 @@ cmd_image_build() {
     local build_disk="${STORAGE_DIR}/base-build-windows.img"
     local build_vars="${STORAGE_DIR}/base-build-windows.vars"
     local build_rom="${STORAGE_DIR}/base-build-windows.rom"
+    local autounattend_img="${STORAGE_DIR}/base-build-autounattend.img"
     local build_pid="/run/shm/base-build-windows.pid"
     local build_log="/run/shm/base-build-windows.log"
     local build_tap="tap-win-build"
@@ -300,7 +301,7 @@ cmd_image_build() {
         fi
     fi
     rm -f "$build_pid" "$build_log" "$build_qmp" \
-          "$build_disk" "$build_vars" "$build_rom"
+          "$build_disk" "$build_vars" "$build_rom" "$autounattend_img"
 
     # Check for Windows ISO
     if [[ ! -f "$iso_file" ]]; then
@@ -331,14 +332,13 @@ cmd_image_build() {
     # Create base image directory
     mkdir -p "$BASE_IMAGE_DIR"
 
-    # Create build disk and seed it with startup.nsh + Autounattend.xml.
-    # A small EFI System Partition at the start of the disk lets the UEFI
-    # Shell find startup.nsh after cdboot.efi's "Press any key" times out.
-    # Windows Setup's WillWipeDisk=true wipes this partition later.
+    # Create build disk (raw, blank — Windows Setup partitions it)
     echo "Creating 64G build disk..."
     qemu-img create -f raw "$build_disk" 64G
-    if ! seed_build_disk "$build_disk"; then
-        echo "Failed to seed build disk. Cannot proceed." >&2
+
+    # Create Autounattend USB image for WinPE to discover
+    if ! create_autounattend_img "$autounattend_img"; then
+        echo "Failed to create Autounattend image. Cannot proceed." >&2
         exit 1
     fi
 
@@ -407,6 +407,8 @@ cmd_image_build() {
         -device "usb-storage,drive=cdrom0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
+        -drive "file=${autounattend_img},id=aua0,format=raw,cache=unsafe,readonly=on,if=none" \
+        -device "usb-storage,drive=aua0,removable=on" \
         -object "iothread,id=io0" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \

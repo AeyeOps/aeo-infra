@@ -53,42 +53,31 @@ windows_base_image_status() {
 
 # ─── Build Disk Seeding ───────────────────────────────────────────────
 
-# Seed a build disk with Autounattend.xml on a small FAT32 EFI System
-# Partition. Windows Setup discovers this file during WinPE boot and
-# uses it for unattended installation.
-#
-# Windows Setup's WillWipeDisk=true wipes this partition when it runs,
-# so the seed only exists during the initial boot.
-# Args: disk_path
-seed_build_disk() {
-    local disk_path="$1"
+# Create a small FAT image containing Autounattend.xml for WinPE to find.
+# WinPE scans all drives with assigned letters for Autounattend.xml.
+# USB removable media always gets a drive letter; ESPs on hard drives don't.
+# Args: output_image_path
+# Returns: 0 on success
+create_autounattend_img() {
+    local img_path="$1"
 
     if [[ ! -f "$AUTOUNATTEND_XML" ]]; then
         echo "    ERROR: Autounattend.xml not found: $AUTOUNATTEND_XML" >&2
         return 1
     fi
 
-    echo "    Creating GPT with EFI System Partition on build disk..."
+    # 2MB FAT16 image — minimal but valid
+    dd if=/dev/zero of="$img_path" bs=1M count=2 2>/dev/null
+    mkfs.fat -F 16 -n AUNATTEND "$img_path" >/dev/null
 
-    # Create GPT with a 64MB EFI System Partition at the start
-    sgdisk -Z "$disk_path" >/dev/null 2>&1
-    sgdisk -n 1:2048:+64M -t 1:ef00 -c 1:ESP "$disk_path" >/dev/null 2>&1
-
-    # Format the ESP as FAT32
-    local loop_dev
-    loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit $((64*1024*1024)) "$disk_path")
-    mkfs.fat -F 32 -n ESP "$loop_dev" >/dev/null
-
-    # Mount and copy Autounattend.xml
     local mnt
     mnt=$(mktemp -d)
-    mount "$loop_dev" "$mnt"
+    mount -o loop "$img_path" "$mnt"
     cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
     umount "$mnt"
     rmdir "$mnt"
-    losetup -d "$loop_dev"
 
-    echo "    Seeded build disk with Autounattend.xml"
+    echo "    Created Autounattend.xml USB image"
     return 0
 }
 
