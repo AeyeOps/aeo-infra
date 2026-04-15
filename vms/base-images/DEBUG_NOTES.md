@@ -26,12 +26,29 @@ The `Press any key to boot from CD or DVD` prompt from Windows ARM64's
   effect on cdboot's prompt. Full-RFB input reaches the *Shell* fine but
   does NOT reach cdboot.
 
-**Update 2026-04-15**: cdboot does NOT time out in any config we've seen.
-Earlier notes about a 10 s timeout were wrong — the "Shell appeared"
-outcome of the prior session was produced some other way (possibly boot
-option fall-through when that particular boot attempt failed for a
-different reason). In a minimal config with blank NVRAM, cdboot sits on
-"Press any key" indefinitely (observed 60 s+).
+**Update 2026-04-15 (second revision)**: cdboot.efi DOES time out, after
+~15–20 s of "Press any key to boot from CD or DVD......" (dots advance
+visibly as the countdown progresses). TianoCore then logs:
+
+```
+BdsDxe: failed to start Boot0001 "UEFI QEMU QEMU USB HARDDRIVE …" … : Time out
+```
+
+and moves to the next boot entry.
+
+Earlier sessions observed cdboot "hanging indefinitely" because the
+host's `build.vars` NVRAM file was never *actually* wiped between runs.
+`truncate -s 64M build.vars` on an already-64 MiB file is a no-op — it
+leaves NVRAM contents intact. To actually reset NVRAM you must `rm
+build.vars` first, then `truncate -s 64M` (zero-fills). With a stale
+NVRAM carrying a mix of successful/failed boot state, TianoCore's boot
+order and retry behavior diverges from the clean case and cdboot can
+appear to hang.
+
+**How to wipe NVRAM correctly:**
+```bash
+rm -f build.vars && truncate -s 64M build.vars
+```
 
 ### 2. TianoCore ARM64 UEFI Shell CAN read UDF (FS1), not ISO 9660 (FS0)
 
