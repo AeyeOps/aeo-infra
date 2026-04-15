@@ -70,6 +70,7 @@ sudo ./winvm.sh image build
 - VirtIO drivers ISO at `vms/.images/virtio-win.iso`
 - QEMU with KVM support (aarch64)
 - UEFI firmware: `/usr/share/qemu-efi-aarch64/QEMU_EFI.fd`
+- `xorriso` for reading El Torito boot catalog, `7z` for extracting efisys files
 - `mtools` or `mount` for creating the autounattend FAT image
 
 ## Validation Status
