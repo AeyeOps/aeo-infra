@@ -378,6 +378,7 @@ cmd_image_build() {
         -display "vnc=${build_vnc},websocket=${build_vnc_ws}" \
         -device ramfb \
         -monitor "telnet:localhost:${build_monitor},server,nowait,nodelay" \
+        -qmp "unix:/run/shm/base-build-windows.qmp,server,nowait" \
         -daemonize \
         -D "$build_log" \
         -pidfile "$build_pid" \
@@ -388,7 +389,6 @@ cmd_image_build() {
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
-        -boot strict=on \
         -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=cdrom0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
@@ -396,7 +396,7 @@ cmd_image_build() {
         -object "iothread,id=io0" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
-        -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=0" \
+        -device "scsi-hd,drive=data0,bus=scsi0.0" \
         -drive "file=${build_rom},if=pflash,unit=0,format=raw,readonly=on" \
         -drive "file=${build_vars},if=pflash,unit=1,format=raw" \
         -object "rng-random,id=rng0,filename=/dev/urandom" \
@@ -413,7 +413,37 @@ cmd_image_build() {
     local pid
     pid=$(cat "$build_pid")
     echo "  QEMU started (PID: $pid)"
-    echo "  Boot path: disk ESP → UEFI Shell → startup.nsh → ISO bootmgfw"
+
+    # Dismiss cdboot.efi's "Press any key to boot from CD" prompt.
+    # HMP sendkey sends PS/2 scancodes (no PS/2 on ARM64 virt).
+    # VNC key events don't reach cdboot's ConIn.
+    # QMP input-send-event goes through QEMU's full input dispatch
+    # and reaches the USB keyboard, which cdboot polls.
+    local qmp_sock="/run/shm/base-build-windows.qmp"
+    echo "  Waiting for cdboot prompt..."
+    sleep 8
+    echo "  Sending key via QMP to dismiss cdboot..."
+    python3 -c "
+import socket, json, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect('${qmp_sock}')
+s.recv(4096)  # greeting
+s.sendall(json.dumps({'execute': 'qmp_capabilities'}).encode() + b'\n')
+s.recv(4096)  # response
+for _ in range(3):
+    cmd = {'execute': 'input-send-event', 'arguments': {'events': [
+        {'type': 'key', 'data': {'down': True, 'key': {'type': 'qcode', 'data': 'ret'}}}
+    ]}}
+    s.sendall(json.dumps(cmd).encode() + b'\n')
+    s.recv(4096)
+    time.sleep(0.1)
+    cmd['arguments']['events'][0]['data']['down'] = False
+    s.sendall(json.dumps(cmd).encode() + b'\n')
+    s.recv(4096)
+    time.sleep(0.5)
+s.close()
+"
+    echo "  Boot path: cdboot → QMP keypress → Windows Setup"
     echo ""
     printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 

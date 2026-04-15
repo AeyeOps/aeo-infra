@@ -53,21 +53,13 @@ windows_base_image_status() {
 
 # ─── Build Disk Seeding ───────────────────────────────────────────────
 
-# Seed a build disk with a bootable EFI System Partition containing:
-#   \EFI\BOOT\BOOTAA64.EFI  — UEFI Shell (default boot target)
-#   \startup.nsh             — auto-executed by Shell, launches Windows
-#   \Autounattend.xml        — Windows unattended answer file
+# Seed a build disk with Autounattend.xml on a small FAT32 EFI System
+# Partition. Windows Setup discovers this file during WinPE boot and
+# uses it for unattended installation.
 #
-# Boot path: UEFI → disk ESP → Shell → startup.nsh → ISO's bootmgfw.
-# This avoids cdboot.efi's "Press any key" prompt entirely. cdboot
-# hangs on ARM64 (no timeout, VNC/sendkey can't reach it).
-#
-# Windows Setup's WillWipeDisk=true wipes this partition when it runs.
-#
-# Requires: efi-shell-aa64 package (apt install efi-shell-aa64)
+# Windows Setup's WillWipeDisk=true wipes this partition when it runs,
+# so the seed only exists during the initial boot.
 # Args: disk_path
-UEFI_SHELL="/usr/share/efi-shell-aa64/shellaa64.efi"
-
 seed_build_disk() {
     local disk_path="$1"
 
@@ -75,35 +67,6 @@ seed_build_disk() {
         echo "    ERROR: Autounattend.xml not found: $AUTOUNATTEND_XML" >&2
         return 1
     fi
-
-    if [[ ! -f "$UEFI_SHELL" ]]; then
-        echo "    ERROR: UEFI Shell not found: $UEFI_SHELL" >&2
-        echo "    Install with: apt install efi-shell-aa64" >&2
-        return 1
-    fi
-
-    local startup_nsh
-    startup_nsh=$(mktemp)
-    # FS0 is our own ESP (contains this startup.nsh). The Windows ISO
-    # UDF volume appears as FS1 or later depending on enumeration order.
-    # bootaa64.efi on the ISO IS bootmgfw.efi (2.7MB, verified via
-    # strings "bootmgfw.pdb") — launching it goes straight into the
-    # Windows Boot Manager, reads BCD, and loads boot.wim.
-    cat > "$startup_nsh" << 'STARTUP'
-@echo -off
-echo Connecting all drivers (USB enumeration)...
-connect -r
-map -u
-echo Launching Windows Boot Manager from ISO...
-FS1:\efi\boot\bootaa64.efi
-FS2:\efi\boot\bootaa64.efi
-FS3:\efi\boot\bootaa64.efi
-FS4:\efi\boot\bootaa64.efi
-FS5:\efi\boot\bootaa64.efi
-FS6:\efi\boot\bootaa64.efi
-echo ERROR: bootaa64.efi not found on any filesystem
-map -b
-STARTUP
 
     echo "    Creating GPT with EFI System Partition on build disk..."
 
@@ -116,20 +79,16 @@ STARTUP
     loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit $((64*1024*1024)) "$disk_path")
     mkfs.fat -F 32 -n ESP "$loop_dev" >/dev/null
 
-    # Mount and copy files
+    # Mount and copy Autounattend.xml
     local mnt
     mnt=$(mktemp -d)
     mount "$loop_dev" "$mnt"
-    mkdir -p "$mnt/EFI/BOOT"
-    cp "$UEFI_SHELL" "$mnt/EFI/BOOT/BOOTAA64.EFI"
-    cp "$startup_nsh" "$mnt/startup.nsh"
     cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
     umount "$mnt"
     rmdir "$mnt"
     losetup -d "$loop_dev"
-    rm -f "$startup_nsh"
 
-    echo "    Seeded build disk with UEFI Shell + startup.nsh + Autounattend.xml"
+    echo "    Seeded build disk with Autounattend.xml"
     return 0
 }
 
