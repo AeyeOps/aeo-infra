@@ -456,9 +456,9 @@ def send_key():
     cmd['arguments']['events'][0]['data']['down'] = False
     s.sendall(json.dumps(cmd).encode() + b'\n')
     s.recv(4096)
-# Send keys from 3s to 33s to cover varying USB enumeration times
-time.sleep(3)
-for i in range(30):
+# Wait for USB enumeration + cdboot prompt, then send keys
+time.sleep(8)
+for i in range(10):
     send_key()
     sys.stdout.write('.')
     sys.stdout.flush()
