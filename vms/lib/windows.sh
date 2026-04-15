@@ -98,15 +98,25 @@ STARTUP
     cp "$source_iso" "$output_iso"
 
     echo "    Appending startup.nsh + Autounattend.xml to ISO 9660 tree..."
-    if ! xorriso -dev "$output_iso" \
+    local xorriso_log
+    xorriso_log=$(mktemp)
+    # xorriso returns 32 (SORRY) because the El Torito boot image is hidden
+    # (not a named file in the ISO 9660 tree). The append still succeeds —
+    # the boot catalog stays intact at its original LBA.
+    xorriso -dev "$output_iso" \
         -boot_image any replay \
+        -return_with SORRY 0 \
         -map "$startup_nsh" /startup.nsh \
         -map "$AUTOUNATTEND_XML" /Autounattend.xml \
-        -commit 2>/dev/null; then
-        echo "    ERROR: xorriso append failed" >&2
-        rm -f "$startup_nsh" "$output_iso"
+        -commit >"$xorriso_log" 2>&1
+    local rc=$?
+    if [[ $rc -ne 0 ]]; then
+        echo "    ERROR: xorriso append failed (exit $rc)" >&2
+        cat "$xorriso_log" >&2
+        rm -f "$startup_nsh" "$output_iso" "$xorriso_log"
         return 1
     fi
+    rm -f "$xorriso_log"
     rm -f "$startup_nsh"
 
     echo "    Created: $output_iso"
