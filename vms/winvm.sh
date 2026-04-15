@@ -444,27 +444,35 @@ cmd_image_build() {
     # QMP input-send-event goes through QEMU's full input dispatch
     # and reaches the USB keyboard, which cdboot polls.
     local qmp_sock="$build_qmp"
-    echo "  Waiting for cdboot prompt..."
-    sleep 8
-    echo "  Sending key via QMP to dismiss cdboot..."
+    echo "  Dismissing cdboot via QMP key injection..."
+    # Send keys repeatedly from 5s to 25s — covers the window where
+    # cdboot's "Press any key" prompt appears during UEFI boot.
     python3 -c "
-import socket, json, time
+import socket, json, time, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect('${qmp_sock}')
+s.settimeout(5)
 s.recv(4096)  # greeting
 s.sendall(json.dumps({'execute': 'qmp_capabilities'}).encode() + b'\n')
 s.recv(4096)  # response
-for _ in range(3):
+def send_key():
     cmd = {'execute': 'input-send-event', 'arguments': {'events': [
         {'type': 'key', 'data': {'down': True, 'key': {'type': 'qcode', 'data': 'ret'}}}
     ]}}
     s.sendall(json.dumps(cmd).encode() + b'\n')
     s.recv(4096)
-    time.sleep(0.1)
+    time.sleep(0.05)
     cmd['arguments']['events'][0]['data']['down'] = False
     s.sendall(json.dumps(cmd).encode() + b'\n')
     s.recv(4096)
-    time.sleep(0.5)
+# Wait for UEFI to reach cdboot, then spam keys
+time.sleep(5)
+for i in range(20):
+    send_key()
+    sys.stdout.write('.')
+    sys.stdout.flush()
+    time.sleep(1)
+print()
 s.close()
 "
     echo "  Boot path: cdboot → QMP keypress → Windows Setup"
