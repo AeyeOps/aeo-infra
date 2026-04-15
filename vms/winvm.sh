@@ -340,10 +340,10 @@ cmd_image_build() {
     # Create base image directory
     mkdir -p "$BASE_IMAGE_DIR"
 
-    # Create build disk with UEFI Shell on ESP
+    # Create build disk with Windows boot files on ESP
     echo "Creating 64G build disk..."
     qemu-img create -f raw "$build_disk" 64G
-    if ! seed_build_disk "$build_disk"; then
+    if ! seed_build_disk "$build_disk" "$iso_file"; then
         echo "Failed to seed build disk. Cannot proceed." >&2
         exit 1
     fi
@@ -377,25 +377,22 @@ cmd_image_build() {
 
     local screen_ppm="/tmp/winbuild-latest.ppm"
 
-    # ── PHASE 1: Boot from ISO, extract Windows image ──────────────────
+    # ── PHASE 1: Boot from disk, extract Windows image ──────────────────
     #
-    # cdboot.efi on ARM64 hangs at "Press any key" (no timeout, and
-    # neither VNC, HMP sendkey, nor QMP input-send-event can reach it).
+    # The build disk's ESP contains bootmgfw.efi, BCD, and boot.wim
+    # extracted from the Windows ISO. UEFI boots bootmgfw directly as
+    # \EFI\BOOT\BOOTAA64.EFI — no cdboot.efi, no Shell, no keystrokes.
     #
-    # Workaround: start QEMU WITHOUT the Windows ISO so cdboot never
-    # runs. The build disk's ESP (with UEFI Shell) boots instead. Then
-    # hot-plug the ISO via QEMU monitor and use VNC to type Shell
-    # commands that launch bootmgfw.efi from the ISO's UDF filesystem.
+    # The Windows ISO stays attached (USB) for install.wim, and the
+    # VirtIO ISO for driver injection during WinPE.
     #
     # WinPE discovers Autounattend.xml on the USB drive, partitions the
-    # disk, extracts the WIM image, and reboots. We detect the reboot
-    # and STOP QEMU to prevent the reinstall loop.
+    # disk (wiping the ESP), extracts install.wim, and reboots.
 
     echo ""
     echo "Phase 1: Extracting Windows image from ISO..."
     echo ""
 
-    # Start QEMU WITHOUT Windows ISO — only VirtIO drivers and Autounattend
     qemu-system-aarch64 \
         -nodefaults \
         -cpu host \
@@ -417,6 +414,8 @@ cmd_image_build() {
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
+        -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -device "usb-storage,drive=cdrom0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
         -drive "file=${autounattend_img},id=aua0,format=raw,cache=unsafe,readonly=on,if=none" \
@@ -441,51 +440,7 @@ cmd_image_build() {
     local pid
     pid=$(cat "$build_pid")
     echo "  QEMU started (PID: $pid)"
-
-    # Wait for UEFI Shell to boot from the ESP
-    echo "  Waiting for UEFI Shell..."
-    sleep 8
-
-    # Hot-plug Windows ISO as USB storage
-    echo "  Hot-plugging Windows ISO..."
-    echo "drive_add 0 id=cdrom0,file=${iso_file},format=raw,readonly=on,media=cdrom" \
-        | nc -q1 localhost "$build_monitor" >/dev/null 2>&1
-    sleep 1
-    echo "device_add usb-storage,drive=cdrom0,removable=on,id=usb-cdrom0" \
-        | nc -q1 localhost "$build_monitor" >/dev/null 2>&1
-    sleep 2
-
-    # Type Shell commands via VNC to discover and boot from the ISO
-    local vnc_port=$((5900 + ${build_vnc#:}))
-    echo "  Launching Windows Boot Manager via UEFI Shell..."
-    python3 -c "
-import socket, struct, time
-
-def vnc_type(host, port, text):
-    KEYSYM = {'\n': 0xff0d, ' ': 0x20, '\\\\': 0x5c, ':': 0x3a, '/': 0x2f, '-': 0x2d, '.': 0x2e, '_': 0x5f}
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(5)
-    s.connect((host, port))
-    s.recv(12); s.send(b'RFB 003.008\n')
-    n = s.recv(1)[0]; s.recv(n); s.send(bytes([1]))
-    s.recv(4); s.send(b'\x01')
-    si = s.recv(24); nl = struct.unpack('>I', si[20:24])[0]; s.recv(nl)
-    for ch in text:
-        ks = KEYSYM.get(ch, ord(ch))
-        s.send(struct.pack('>BBxxI', 4, 1, ks)); time.sleep(0.02)
-        s.send(struct.pack('>BBxxI', 4, 0, ks)); time.sleep(0.02)
-    s.close()
-
-vnc_type('127.0.0.1', ${vnc_port}, 'connect -r\n')
-time.sleep(3)
-vnc_type('127.0.0.1', ${vnc_port}, 'map -u\n')
-time.sleep(2)
-# Try each filesystem — bootaa64.efi on the ISO is bootmgfw.efi
-for fs in ['FS1', 'FS2', 'FS3', 'FS4', 'FS5']:
-    vnc_type('127.0.0.1', ${vnc_port}, fs + ':\\\\efi\\\\boot\\\\bootaa64.efi\n')
-    time.sleep(3)
-"
-    echo "  Boot path: UEFI Shell → hot-plug ISO → bootmgfw → Windows Setup"
+    echo "  Boot path: disk ESP → bootmgfw → BCD → boot.wim → Windows Setup"
     echo ""
     printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 

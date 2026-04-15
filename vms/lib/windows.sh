@@ -81,39 +81,68 @@ create_autounattend_img() {
     return 0
 }
 
-# Seed a build disk with a bootable EFI System Partition containing
-# UEFI Shell as the default boot target.
-# Args: disk_path
-UEFI_SHELL="/usr/share/efi-shell-aa64/shellaa64.efi"
-
+# Seed the build disk with a 1GB bootable ESP containing:
+#   \EFI\BOOT\BOOTAA64.EFI  — bootmgfw (from Windows ISO)
+#   \EFI\Microsoft\Boot\BCD — boot configuration (from ISO)
+#   \sources\boot.wim       — Windows PE (from ISO, ~610MB)
+#
+# This bypasses cdboot.efi entirely: UEFI firmware boots bootmgfw
+# directly from the ESP. bootmgfw reads BCD, loads boot.wim, and
+# starts WinPE which reads install.wim from the USB-attached ISO.
+#
+# Windows Setup's WillWipeDisk=true wipes this partition later.
+# Args: disk_path, iso_path
 seed_build_disk() {
     local disk_path="$1"
+    local iso_path="$2"
 
-    if [[ ! -f "$UEFI_SHELL" ]]; then
-        echo "    ERROR: UEFI Shell not found: $UEFI_SHELL" >&2
-        echo "    Install with: apt install efi-shell-aa64" >&2
+    if [[ ! -f "$iso_path" ]]; then
+        echo "    ERROR: Windows ISO not found: $iso_path" >&2
         return 1
     fi
 
-    echo "    Creating GPT with EFI System Partition on build disk..."
-
+    echo "    Creating GPT with 1GB EFI System Partition..."
     sgdisk -Z "$disk_path" >/dev/null 2>&1
-    sgdisk -n 1:2048:+64M -t 1:ef00 -c 1:ESP "$disk_path" >/dev/null 2>&1
+    sgdisk -n 1:2048:+1024M -t 1:ef00 -c 1:ESP "$disk_path" >/dev/null 2>&1
 
+    local esp_size=$((1024*1024*1024))
     local loop_dev
-    loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit $((64*1024*1024)) "$disk_path")
+    loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit "$esp_size" "$disk_path")
     mkfs.fat -F 32 -n ESP "$loop_dev" >/dev/null
 
     local mnt
     mnt=$(mktemp -d)
     mount "$loop_dev" "$mnt"
-    mkdir -p "$mnt/EFI/BOOT"
-    cp "$UEFI_SHELL" "$mnt/EFI/BOOT/BOOTAA64.EFI"
+
+    # Extract boot files from ISO
+    echo "    Extracting boot files from ISO..."
+    mkdir -p "$mnt/EFI/BOOT" "$mnt/EFI/Microsoft/Boot/resources" "$mnt/sources"
+    7z e -o"$mnt/EFI/BOOT" "$iso_path" "efi/boot/bootaa64.efi" >/dev/null 2>&1
+    # Rename to standard UEFI default loader name
+    mv "$mnt/EFI/BOOT/bootaa64.efi" "$mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true
+    7z e -o"$mnt/EFI/Microsoft/Boot" "$iso_path" "efi/microsoft/boot/bcd" >/dev/null 2>&1
+    7z e -o"$mnt/EFI/Microsoft/Boot/resources" "$iso_path" "efi/microsoft/boot/resources/bootres.dll" >/dev/null 2>&1
+    echo "    Extracting boot.wim (~610MB)..."
+    7z e -o"$mnt/sources" "$iso_path" "sources/boot.wim" >/dev/null 2>&1
+
+    # Verify critical files
+    local ok=1
+    for f in "$mnt/EFI/BOOT/BOOTAA64.EFI" "$mnt/EFI/Microsoft/Boot/bcd" "$mnt/sources/boot.wim"; do
+        if [[ ! -f "$f" ]]; then
+            echo "    ERROR: Missing: $f" >&2
+            ok=0
+        fi
+    done
+
     umount "$mnt"
     rmdir "$mnt"
     losetup -d "$loop_dev"
 
-    echo "    Seeded build disk with UEFI Shell"
+    if [[ "$ok" -eq 0 ]]; then
+        return 1
+    fi
+
+    echo "    Seeded build disk with Windows boot files"
     return 0
 }
 
