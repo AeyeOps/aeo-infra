@@ -262,7 +262,7 @@ cmd_image_build() {
     require_root
 
     local iso_file="${STORAGE_DIR}/win11arm64.iso"
-    local virtio_iso="${STORAGE_DIR}/virtio-win-autounattend.iso"
+    local virtio_iso="${STORAGE_DIR}/virtio-win.iso"
     local build_disk="${STORAGE_DIR}/base-build-windows.img"
     local build_vars="${STORAGE_DIR}/base-build-windows.vars"
     local build_rom="${STORAGE_DIR}/base-build-windows.rom"
@@ -324,23 +324,13 @@ cmd_image_build() {
         exit 1
     fi
 
-    # Build combined VirtIO + Autounattend ISO if needed
-    local virtio_base="${STORAGE_DIR}/virtio-win.iso"
-    if [[ ! -f "$virtio_base" ]]; then
-        echo "VirtIO drivers ISO not found at: $virtio_base"
+    # Check for VirtIO drivers ISO
+    if [[ ! -f "$virtio_iso" ]]; then
+        echo "VirtIO drivers ISO not found at: $virtio_iso"
         echo ""
         echo "Download from:"
         echo "  https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
         exit 1
-    fi
-    if [[ ! -f "$virtio_iso" ]] || [[ "$virtio_base" -nt "$virtio_iso" ]] || [[ "$AUTOUNATTEND_XML" -nt "$virtio_iso" ]]; then
-        echo "Building combined VirtIO + Autounattend ISO..."
-        local tmpdir
-        tmpdir=$(mktemp -d)
-        7z x -o"$tmpdir" "$virtio_base" >/dev/null 2>&1
-        cp "$AUTOUNATTEND_XML" "$tmpdir/Autounattend.xml"
-        genisoimage -o "$virtio_iso" -J -r -V "VIRTIO-WIN" "$tmpdir" 2>/dev/null
-        rm -rf "$tmpdir"
     fi
 
     echo "  Windows ISO:  $iso_file"
