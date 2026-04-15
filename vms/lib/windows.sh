@@ -51,29 +51,24 @@ windows_base_image_status() {
     fi
 }
 
-# ─── Modified ISO (xorriso append) ────────────────────────────────────
+# ─── Build Disk Seeding ───────────────────────────────────────────────
 
-# Append startup.nsh and Autounattend.xml to a copy of the Windows ISO.
+# Seed a build disk with a small FAT32 EFI System Partition containing
+# startup.nsh and Autounattend.xml. The UEFI Shell finds startup.nsh on
+# this partition after cdboot.efi's "Press any key" times out.
 #
-# Uses xorriso's append mode to add files to the ISO 9660 directory tree
-# without touching the El Torito boot catalog. The original boot image
-# (efisys.bin at LBA 531, spanning the full disc) stays intact — only
-# the ISO 9660 root directory gets updated to include the new files.
+# Windows Setup's WillWipeDisk=true wipes this partition when it runs,
+# so the seed only exists during the initial boot.
 #
-# Boot flow: UEFI reads El Torito → cdboot.efi → "Press any key" → times
-# out → UEFI Shell → reads ISO 9660 → finds startup.nsh → executes it →
-# loads bootaa64.efi directly → Windows Setup finds Autounattend.xml on
-# the same ISO → unattended install proceeds.
-#
-# We bypass cdboot.efi's key prompt without modifying the boot image:
+# We use the build disk (not the ISO) because:
+# - ISO's UDF filesystem is read-only (can't add files)
+# - ISO rebuild breaks El Torito full-disc boot extent
 # - cdboot_noprompt.efi crashes on ARM64
 # - QEMU sendkey/VNC don't reach USB keyboard on ARM64 virt
-# - Rebuilding the ISO breaks El Torito full-disc extent
-# - UEFI doesn't enumerate extra USB/virtio devices reliably
-# Args: source_iso, output_iso
-create_noprompt_iso() {
-    local source_iso="$1"
-    local output_iso="$2"
+# - Additional USB/virtio devices aren't enumerated by TianoCore
+# Args: disk_path
+seed_build_disk() {
+    local disk_path="$1"
 
     if [[ ! -f "$AUTOUNATTEND_XML" ]]; then
         echo "    ERROR: Autounattend.xml not found: $AUTOUNATTEND_XML" >&2
@@ -94,28 +89,29 @@ endfor
 echo ERROR: bootaa64.efi not found
 STARTUP
 
-    echo "    Copying original ISO..."
-    cp "$source_iso" "$output_iso"
+    echo "    Creating GPT with EFI System Partition on build disk..."
 
-    # Mount the UDF filesystem of the ISO copy and add files directly.
-    # This puts startup.nsh on the UDF tree (visible as FS0: in UEFI Shell).
-    # The El Torito boot catalog is completely untouched.
-    echo "    Mounting UDF filesystem to add startup.nsh + Autounattend.xml..."
+    # Create GPT with a 64MB EFI System Partition at the start
+    sgdisk -Z "$disk_path" >/dev/null 2>&1
+    sgdisk -n 1:2048:+64M -t 1:ef00 -c 1:ESP "$disk_path" >/dev/null 2>&1
+
+    # Format the ESP as FAT32
+    local loop_dev
+    loop_dev=$(losetup --find --show --offset $((2048*512)) --sizelimit $((64*1024*1024)) "$disk_path")
+    mkfs.fat -F 32 -n ESP "$loop_dev" >/dev/null
+
+    # Mount and copy files
     local mnt
     mnt=$(mktemp -d)
-    if ! mount -t udf -o loop "$output_iso" "$mnt" 2>/dev/null; then
-        echo "    ERROR: Failed to mount UDF filesystem" >&2
-        rm -f "$startup_nsh"
-        rmdir "$mnt"
-        return 1
-    fi
+    mount "$loop_dev" "$mnt"
     cp "$startup_nsh" "$mnt/startup.nsh"
     cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
     umount "$mnt"
     rmdir "$mnt"
+    losetup -d "$loop_dev"
     rm -f "$startup_nsh"
 
-    echo "    Created: $output_iso"
+    echo "    Seeded build disk with startup.nsh + Autounattend.xml"
     return 0
 }
 
