@@ -388,7 +388,7 @@ cmd_image_build() {
         du --block-size=1 "$1" 2>/dev/null | cut -f1
     }
 
-    local screen_ppm="/tmp/winbuild-latest.ppm"
+    local screen_ppm="${STORAGE_DIR}/winbuild-latest.ppm"
     local vnc_tool
     vnc_tool="$(cd "$(dirname "$0")" && pwd)/base-images/vnc_full.py"
     local vnc_port
