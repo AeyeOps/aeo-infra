@@ -496,37 +496,57 @@ cmd_image_build() {
             disk_h=$(numfmt --to=iec --suffix=B "$now_disk_bytes" 2>/dev/null || echo "?")
             rate_h=$(numfmt --to=iec --suffix=B/s "$rate_bps" 2>/dev/null || echo "?")
 
-            # Refresh screen capture every 30s (PPM + PNG for Windows viewing)
+            # Refresh screen capture every 30s (PPM + PNG for remote viewing)
+            local screen_png="${screen_ppm%.ppm}.png"
+            local screen_text=""
             if [[ -f "$vnc_tool" ]]; then
                 python3 "$vnc_tool" --host 127.0.0.1 --port "$vnc_port" \
                     --screenshot "$screen_ppm" 2>/dev/null || true
-                python3 -c "from PIL import Image; Image.open('$screen_ppm').save('${screen_ppm%.ppm}.png')" 2>/dev/null || true
+                python3 -c "from PIL import Image; Image.open('$screen_ppm').save('$screen_png')" 2>/dev/null || true
+                # OCR the screenshot for status reporting
+                if command -v tesseract >/dev/null 2>&1 && [[ -f "$screen_png" ]]; then
+                    screen_text=$(tesseract "$screen_png" stdout 2>/dev/null || true)
+                fi
             fi
 
+            # Determine phase from disk activity + OCR
             if (( elapsed < 60 )); then phase="uefi-boot"
             elif (( rate_bps > 1024*1024 )); then phase="image-extraction"
             elif (( rate_bps > 0 )); then phase="installing-windows"
             else phase="reboot-or-config"
             fi
 
+            # Override phase with OCR-detected screen state
+            if [[ -n "$screen_text" ]]; then
+                if echo "$screen_text" | grep -qi "Press any key to boot"; then
+                    phase="cdboot-prompt"
+                elif echo "$screen_text" | grep -qi "failed to start\|invalid object\|0xc000"; then
+                    phase="ERROR-on-screen"
+                elif echo "$screen_text" | grep -qi "Select language\|Windows Setup"; then
+                    phase="winpe-setup"
+                elif echo "$screen_text" | grep -qi "Install driver\|media driver"; then
+                    phase="winpe-needs-driver"
+                elif echo "$screen_text" | grep -qi "Which type of installation\|Install now"; then
+                    phase="winpe-installing"
+                elif echo "$screen_text" | grep -qi "Copying\|Expanding\|Installing features\|Getting ready"; then
+                    phase="extracting-image"
+                elif echo "$screen_text" | grep -qi "Shell>"; then
+                    phase="uefi-shell"
+                elif echo "$screen_text" | grep -qi "BdsDxe.*starting"; then
+                    phase="firmware-boot"
+                fi
+            fi
+
             printf "  %-8s  %-10s  %-12s  %-10s  %s\n" \
                 "$(printf '%dm%02ds' $((elapsed/60)) $((elapsed%60)))" \
                 "$disk_h" "" "$rate_h" "$phase"
 
-            # Stall detection: if disk hasn't grown in 2 min, grab VNC screen
-            if (( rate_bps == 0 && elapsed > 120 && stall_warned == 0 )); then
-                stall_warned=1
+            # Bail on detected errors
+            if [[ "$phase" == "ERROR-on-screen" ]]; then
                 echo ""
-                echo "  [!] No disk activity for 2+ minutes. Capturing screen..."
-                if [[ -f "$vnc_tool" ]]; then
-                    python3 "$vnc_tool" --host 127.0.0.1 --port "$vnc_port" \
-                        --screenshot "$screen_ppm" 2>/dev/null || true
-                    echo "  [!] Screenshot saved: $screen_ppm"
-                fi
-                echo "  [!] Check VNC: vncviewer localhost${build_vnc}"
-                echo "  [!] If stuck at 'Press any key': cdboot didn't time out (stale NVRAM?)"
-                echo "  [!] If stuck at Shell prompt: ESP boot failed, check BOOT.md"
-                echo "  [!] If stuck at BdsDxe 'starting HARDDISK': bootmgfw hung (BCD issue)"
+                echo "  [!] ERROR detected on screen. OCR text:"
+                echo "$screen_text" | grep -i "error\|fail\|invalid\|0xc000\|status" | sed 's/^/  [!]   /'
+                echo "  [!] Screenshot: $screen_png"
                 echo ""
             fi
 

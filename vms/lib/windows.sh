@@ -112,9 +112,10 @@ build_boot_esp() {
 
     # Install missing dependencies automatically
     local missing_pkgs=()
-    command -v 7z       >/dev/null 2>&1 || missing_pkgs+=(p7zip-full)
-    command -v sgdisk   >/dev/null 2>&1 || missing_pkgs+=(gdisk)
-    command -v mkfs.fat >/dev/null 2>&1 || missing_pkgs+=(dosfstools)
+    command -v 7z        >/dev/null 2>&1 || missing_pkgs+=(p7zip-full)
+    command -v sgdisk    >/dev/null 2>&1 || missing_pkgs+=(gdisk)
+    command -v mkfs.fat  >/dev/null 2>&1 || missing_pkgs+=(dosfstools)
+    command -v tesseract >/dev/null 2>&1 || missing_pkgs+=(tesseract-ocr)
     if (( ${#missing_pkgs[@]} > 0 )); then
         echo "    Installing ${missing_pkgs[*]}..."
         apt-get install -y "${missing_pkgs[@]}"
