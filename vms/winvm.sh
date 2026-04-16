@@ -267,6 +267,7 @@ cmd_image_build() {
     local build_vars="${STORAGE_DIR}/base-build-windows.vars"
     local build_rom="${STORAGE_DIR}/base-build-windows.rom"
     local build_esp="${STORAGE_DIR}/base-build-windows-esp.img"
+    local build_usb="${STORAGE_DIR}/base-build-windows-usb.img"
     local build_pid="/run/shm/base-build-windows.pid"
     local build_log="/run/shm/base-build-windows.log"
     local build_tap="tap-win-build"
@@ -308,7 +309,7 @@ cmd_image_build() {
         sleep 1
     fi
     rm -f "$build_pid" "$build_log" \
-          "$build_disk" "$build_vars" "$build_rom" "$build_esp"
+          "$build_disk" "$build_vars" "$build_rom" "$build_esp" "$build_usb"
 
     # Check for Windows ISO
     if [[ ! -f "$iso_file" ]]; then
@@ -340,8 +341,8 @@ cmd_image_build() {
     mkdir -p "$BASE_IMAGE_DIR"
 
     # Create build disk with startup.nsh + Autounattend.xml
-    echo "Creating 16G build disk..."
-    qemu-img create -f raw "$build_disk" 16G
+    echo "Creating 32G build disk..."
+    qemu-img create -f raw "$build_disk" 32G
     if ! seed_build_disk "$build_disk"; then
         echo "Failed to seed build disk. Cannot proceed." >&2
         exit 1
@@ -358,6 +359,22 @@ cmd_image_build() {
         echo "Failed to build boot ESP. Cannot proceed." >&2
         exit 1
     fi
+
+    # Create USB image with Autounattend.xml for WinPE discovery.
+    # WinPE cannot see the virtio-scsi build disk until VirtIO drivers are
+    # loaded, but the drivers are specified IN the answer file — chicken-and-egg.
+    # This USB image delivers the answer file on a removable medium WinPE
+    # can see natively.
+    echo "Creating Autounattend USB image..."
+    truncate -s 32M "$build_usb"
+    mkfs.fat -F 16 -n ANSWER "$build_usb" >/dev/null
+    local usb_mnt
+    usb_mnt=$(mktemp -d)
+    mount "$build_usb" "$usb_mnt"
+    cp "$AUTOUNATTEND_XML" "$usb_mnt/Autounattend.xml"
+    umount "$usb_mnt"
+    rmdir "$usb_mnt"
+    echo "  Autounattend USB ready"
 
     # Create UEFI files.
     # IMPORTANT: `truncate -s 64M` on an already-64 MiB file is a no-op; it
@@ -383,17 +400,45 @@ cmd_image_build() {
     ensure_nat_masquerade "$upstream"
     ensure_forward_rules "$BRIDGE_NAME" "$upstream"
 
-    # Sparse-aware allocated-bytes helper (returns 0 on error)
+    # Sparse-aware allocated-bytes helper.
+    # If the file is missing, emits a loud warning to stderr once and returns "".
+    # Callers must handle empty results (e.g., skip arithmetic).
     _disk_allocated_bytes() {
+        if [[ ! -e "$1" ]]; then
+            echo "[!] DISK FILE MISSING: $1" >&2
+            return 1
+        fi
         du --block-size=1 "$1" 2>/dev/null | cut -f1
     }
 
-    local screen_ppm="${STORAGE_DIR}/winbuild-latest.ppm"
+    local screen_dir="${STORAGE_DIR}/winbuild-latest"
+    rm -rf "$screen_dir"
+    mkdir -p "$screen_dir"
+    local screen_ppm="${screen_dir}/latest.ppm"
     local vnc_tool
     vnc_tool="$(cd "$(dirname "$0")" && pwd)/base-images/vnc_full.py"
     local vnc_port
     vnc_port=$(( 5900 + ${build_vnc#:} ))  # :9 → 5909
     local stall_warned=0
+
+    # Capture a timestamped screenshot + OCR, return OCR text in $__ocr_text
+    _capture_screen() {
+        __ocr_text=""
+        if [[ ! -f "$vnc_tool" ]]; then return; fi
+        local ts
+        ts=$(date +%Y%m%d-%H%M%S)
+        local ppm="${screen_dir}/${ts}.ppm"
+        local png="${screen_dir}/${ts}.png"
+        python3 "$vnc_tool" --host 127.0.0.1 --port "$vnc_port" \
+            --screenshot "$ppm" 2>/dev/null || return 0
+        python3 -c "from PIL import Image; Image.open('$ppm').save('$png')" 2>/dev/null || return 0
+        rm -f "$ppm"  # keep only PNG
+        # symlink latest for easy viewing
+        ln -sf "$png" "${screen_dir}/latest.png"
+        if command -v tesseract >/dev/null 2>&1 && [[ -f "$png" ]]; then
+            __ocr_text=$(tesseract "$png" stdout 2>/dev/null || true)
+        fi
+    }
 
     # ── PHASE 1: Boot WinPE from ESP, extract Windows image ─────────────
     #
@@ -406,11 +451,21 @@ cmd_image_build() {
     # finds install.wim on the USB ISO, partitions the build disk, extracts
     # the image, and reboots.
     #
-    # No input injection (QMP/VNC) needed. Fully deterministic.
+    # No input injection (QMP/VNC) needed.
+    # bootmgfw on ARM64 QEMU has a non-deterministic startup — it
+    # silently exits ~50% of the time. Retry up to 3 times with
+    # fresh NVRAM each attempt.
 
+    local boot_ok=0
+    local max_boot_attempts=10
+    for boot_attempt in $(seq 1 $max_boot_attempts); do
     echo ""
-    echo "Phase 1: Booting WinPE from ESP (cdboot timeout ~15s)..."
+    echo "Phase 1: Booting WinPE from ESP (attempt $boot_attempt/$max_boot_attempts)..."
     echo ""
+
+    # Fresh NVRAM for each attempt
+    rm -f "$build_vars"
+    truncate -s 64M "$build_vars"
 
     qemu-system-aarch64 \
         -nodefaults \
@@ -437,9 +492,11 @@ cmd_image_build() {
         -device "usb-storage,drive=cdrom0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
+        -drive "file=${build_usb},id=answer0,format=raw,cache=unsafe,readonly=on,if=none" \
+        -device "usb-storage,drive=answer0,removable=on" \
         -object "iothread,id=io0" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
-        -drive "file=${build_esp},id=esp0,format=raw,cache=unsafe,readonly=on,if=none" \
+        -drive "file=${build_esp},id=esp0,format=raw,cache=unsafe,if=none" \
         -device "scsi-hd,drive=esp0,bus=scsi0.0,lun=0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
         -device "scsi-hd,drive=data0,bus=scsi0.0,lun=1" \
@@ -449,10 +506,15 @@ cmd_image_build() {
         -device "virtio-rng-pci,rng=rng0" \
         -rtc base=localtime
 
-    sleep 1
+    # Wait for QEMU to daemonize and write PID file (up to 10s)
+    local pid_wait=0
+    while [[ ! -f "$build_pid" ]] && (( pid_wait < 10 )); do
+        sleep 1
+        pid_wait=$((pid_wait + 1))
+    done
 
     if [[ ! -f "$build_pid" ]]; then
-        echo "Failed to start QEMU. Check $build_log"
+        echo "Failed to start QEMU (no PID file after ${pid_wait}s). Check $build_log"
         exit 1
     fi
 
@@ -460,13 +522,65 @@ cmd_image_build() {
     pid=$(cat "$build_pid")
     echo "  QEMU started (PID: $pid)"
     echo "  Boot path: cdboot timeout (~15s) → ESP → bootmgfw → WinPE"
+
+    # Wait up to 90s for boot.wim to start loading (disk grows beyond 2MB).
+    # bootmgfw on ARM64 QEMU silently exits ~50% of the time; detect this
+    # and retry rather than waiting forever.
+    echo "  Waiting for WinPE to load (up to 90s)..."
+    local boot_wait=0
+    local boot_detected=0
+    while (( boot_wait < 90 )); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "  QEMU exited unexpectedly during boot wait"
+            break
+        fi
+        local check_bytes
+        check_bytes=$(_disk_allocated_bytes "$build_disk")
+        if (( check_bytes > 2*1024*1024 )); then
+            echo "  WinPE boot detected (disk=${check_bytes} bytes)"
+            boot_detected=1
+            break
+        fi
+        # Screenshot + OCR every 10s
+        if (( boot_wait > 0 && boot_wait % 10 == 0 )); then
+            _capture_screen
+            if [[ -n "$__ocr_text" ]]; then
+                echo "  --- OCR @${boot_wait}s ---"
+                echo "$__ocr_text" | sed '/^$/d' | head -5 | sed 's/^/  | /'
+                echo "  ---"
+            fi
+            if echo "$__ocr_text" | grep -qi "Windows Setup\|Select language\|Install now\|install Windows\|Copying\|Getting ready\|Expanding\|Disk.*Partition"; then
+                echo "  WinPE boot detected via OCR"
+                boot_detected=1
+                break
+            fi
+            echo "  ... ${boot_wait}s (disk=$(numfmt --to=iec "$check_bytes" 2>/dev/null))"
+        fi
+        sleep 5
+        boot_wait=$((boot_wait + 5))
+    done
+
+    if (( boot_detected == 0 )); then
+        echo "  Boot failed (attempt $boot_attempt/$max_boot_attempts). Killing QEMU..."
+        echo "quit" | nc -q1 localhost "$build_monitor" >/dev/null 2>&1 || kill "$pid" 2>/dev/null || true
+        sleep 2
+        rm -f "$build_pid"
+        continue  # retry
+    fi
+
+    boot_ok=1
     echo ""
     printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 
     # Wait for WinPE to extract the image and reboot.
-    # Detect: disk peaked above 4GB then dropped below 2GB (sparse reclaim on reboot).
-    local elapsed=0
+    # Detect reboot AFTER extraction (peak > 4GB) by either:
+    #   (a) OCR shows the UEFI/bootmgfw screen again, or
+    #   (b) disk has been idle for 60s (no writes after extraction).
+    # The old disk-shrink heuristic never fires because Windows' shutdown
+    # doesn't TRIM, so allocated bytes stay at ~9GB post-extraction.
+    local elapsed=$boot_wait
     local peak_disk_bytes=0
+    local disk_idle_seconds=0
     local last_disk_bytes
     last_disk_bytes=$(_disk_allocated_bytes "$build_disk")
     while kill -0 "$pid" 2>/dev/null; do
@@ -477,41 +591,20 @@ cmd_image_build() {
             peak_disk_bytes=$now_disk_bytes
         fi
 
-        # Detect first reboot: peak passed 4GB, now dropped below 2GB
-        if (( elapsed > 120 && peak_disk_bytes > 4*1024*1024*1024 && now_disk_bytes < 2*1024*1024*1024 )); then
-            echo ""
-            echo "  [*] First reboot detected (peak=${peak_disk_bytes}, now=${now_disk_bytes})"
-            echo "  [*] Stopping QEMU to remove ISO before next boot..."
-            echo "quit" | nc -q1 localhost "$build_monitor" >/dev/null 2>&1 || kill "$pid" 2>/dev/null || true
-            sleep 2
-            rm -f "$build_pid"
-            break
-        fi
-
-        # Progress line every 30s
-        if (( elapsed % 30 == 0 && elapsed > 0 )); then
+        # Screenshot every 10s, progress line every 10s
+        if (( elapsed % 10 == 0 && elapsed > 0 )); then
             local delta_bytes=$(( now_disk_bytes - last_disk_bytes ))
-            local rate_bps=$(( delta_bytes / 30 ))
+            local rate_bps=$(( delta_bytes / 10 ))
             local disk_h rate_h phase
             disk_h=$(numfmt --to=iec --suffix=B "$now_disk_bytes" 2>/dev/null || echo "?")
             rate_h=$(numfmt --to=iec --suffix=B/s "$rate_bps" 2>/dev/null || echo "?")
 
-            # Refresh screen capture every 30s (PPM + PNG for remote viewing)
-            local screen_png="${screen_ppm%.ppm}.png"
-            local screen_text=""
-            if [[ -f "$vnc_tool" ]]; then
-                python3 "$vnc_tool" --host 127.0.0.1 --port "$vnc_port" \
-                    --screenshot "$screen_ppm" 2>/dev/null || true
-                python3 -c "from PIL import Image; Image.open('$screen_ppm').save('$screen_png')" 2>/dev/null || true
-                # OCR the screenshot for status reporting
-                if command -v tesseract >/dev/null 2>&1 && [[ -f "$screen_png" ]]; then
-                    screen_text=$(tesseract "$screen_png" stdout 2>/dev/null || true)
-                    if [[ -n "$screen_text" ]]; then
-                        echo "  --- screen OCR ---"
-                        echo "$screen_text" | sed '/^$/d' | sed 's/^/  | /'
-                        echo "  ---"
-                    fi
-                fi
+            _capture_screen
+            local screen_text="$__ocr_text"
+            if [[ -n "$screen_text" ]]; then
+                echo "  --- screen OCR ---"
+                echo "$screen_text" | sed '/^$/d' | sed 's/^/  | /'
+                echo "  ---"
             fi
 
             # Determine phase from disk activity + OCR
@@ -525,7 +618,7 @@ cmd_image_build() {
             if [[ -n "$screen_text" ]]; then
                 if echo "$screen_text" | grep -qi "Press any key to boot"; then
                     phase="cdboot-prompt"
-                elif echo "$screen_text" | grep -qi "failed to start\|invalid object\|0xc000"; then
+                elif echo "$screen_text" | grep -qi "failed to start\|invalid object\|0xc000\|installation has failed"; then
                     phase="ERROR-on-screen"
                 elif echo "$screen_text" | grep -qi "Select language\|Windows Setup"; then
                     phase="winpe-setup"
@@ -551,7 +644,6 @@ cmd_image_build() {
                 echo ""
                 echo "  [!] ERROR detected on screen. OCR text:"
                 echo "$screen_text" | grep -i "error\|fail\|invalid\|0xc000\|status" | sed 's/^/  [!]   /'
-                echo "  [!] Screenshot: $screen_png"
                 echo ""
             fi
 
@@ -562,20 +654,153 @@ cmd_image_build() {
     done
 
     echo ""
-    echo "  Phase 1 complete (${elapsed}s). Image extracted to disk."
+    echo "  QEMU exited after ${elapsed}s."
+    break  # exit retry loop
+    done   # end boot retry loop
 
-    # ── PHASE 2: Boot from disk, complete install ──────────────────────
+    if (( boot_ok == 0 )); then
+        echo ""
+        echo "  FATAL: WinPE failed to boot after $max_boot_attempts attempts."
+        echo "  Check BOOT.md for debugging guidance."
+        exit 1
+    fi
+
+    # Single-phase build: keep all drives attached through the entire install.
+    # Windows Setup will reboot itself multiple times (extract → specialize →
+    # OOBE → FirstLogonCommands); each reboot cycles through UEFI firmware
+    # and re-runs bootmgfw from the ESP that Windows Setup populated on the
+    # target disk via bcdboot. FirstLogonCommands ends with `shutdown /s`
+    # which triggers QEMU exit, ending the monitoring loop above.
     #
-    # Restart QEMU WITHOUT the Windows ISO. UEFI boots from the disk's
-    # EFI partition (WinPE set up the boot manager in phase 1). Windows
-    # continues through specialize → OOBE → FirstLogonCommands → shutdown.
-    # The VirtIO ISO stays attached for driver discovery during specialize.
+    # Phase 2 QEMU restart was removed: killing at the first firmware-screen
+    # interrupted Windows Setup before bcdboot populated the target ESP,
+    # and the restarted QEMU had no bootable EFI binary on disk.
 
     echo ""
-    echo "Phase 2: Continuing install from disk (no ISO)..."
+    echo "Watch progress:"
+    echo "  Screenshots:    ls $screen_dir/      (every 10s)"
+    echo "  VNC viewer:     vncviewer localhost${build_vnc}"
+    echo "  Manual control: telnet localhost ${build_monitor}"
+    echo "  Force stop:     echo quit | nc -q1 localhost ${build_monitor}"
     echo ""
+    echo "Waiting for install to complete and VM to shut down..."
+    echo "  Soft cap: ${build_timeout}s (advisory only — VM will not be killed)"
+    echo "  The VM shuts itself down when FirstLogonCommands finish."
+    echo ""
+    printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
 
-    rm -f "$build_log"
+    # Wait for VM to shut down, with stall-detect + restart-in-place.
+    # On ARM64 QEMU, bootmgfw silent-exits ~50% of reboots. When Windows
+    # Setup reboots mid-install (specialize/OOBE phases), the VM can get
+    # stuck at the firmware screen forever. Detect: disk mtime unchanged
+    # AND screen unchanged for > stall_limit seconds → kill QEMU and
+    # restart with same disk + NVRAM (NVRAM now has Windows-written boot
+    # entries from bcdboot, so the restart should pick them up).
+    local soft_timeout_warned=0
+    local stall_limit=120
+    local max_restarts=10
+    local restart_count=0
+    local vm_shutdown_clean=0
+    local last_disk_mtime last_disk_change last_screen_hash last_screen_change
+    last_disk_bytes=$(_disk_allocated_bytes "$build_disk")
+    local start_disk_bytes=$last_disk_bytes
+
+    while (( restart_count <= max_restarts )); do
+    last_disk_mtime=$(stat -c %Y "$build_disk" 2>/dev/null || echo 0)
+    last_disk_change=$elapsed
+    last_screen_hash=""
+    last_screen_change=$elapsed
+
+    while kill -0 "$pid" 2>/dev/null; do
+        local now_disk_mtime now_disk_bytes
+        now_disk_mtime=$(stat -c %Y "$build_disk" 2>/dev/null || echo 0)
+        now_disk_bytes=$(_disk_allocated_bytes "$build_disk")
+
+        if [[ "$now_disk_mtime" != "$last_disk_mtime" ]]; then
+            last_disk_mtime="$now_disk_mtime"
+            last_disk_change=$elapsed
+        fi
+        local since_disk_change=$(( elapsed - last_disk_change ))
+        local since_screen_change=$(( elapsed - last_screen_change ))
+
+        if (( elapsed >= build_timeout && soft_timeout_warned == 0 )); then
+            echo ""
+            echo "  [!] Build has been running ${elapsed}s (>${build_timeout}s soft cap)."
+            soft_timeout_warned=1
+        fi
+
+        if (( elapsed % 10 == 0 && elapsed > 0 )); then
+            _capture_screen
+
+            local now_screen_hash=""
+            if [[ -f "${screen_dir}/latest.png" ]]; then
+                now_screen_hash=$(md5sum "${screen_dir}/latest.png" 2>/dev/null | cut -d' ' -f1)
+            fi
+            if [[ -n "$now_screen_hash" && "$now_screen_hash" != "$last_screen_hash" ]]; then
+                last_screen_hash="$now_screen_hash"
+                last_screen_change=$elapsed
+                since_screen_change=0
+            fi
+
+            local delta_bytes=$(( now_disk_bytes - last_disk_bytes ))
+            local written_bytes=$(( now_disk_bytes - start_disk_bytes ))
+            local rate_bps=$(( delta_bytes / 10 ))
+            local disk_h written_h rate_h phase
+            disk_h=$(numfmt --to=iec --suffix=B "$now_disk_bytes" 2>/dev/null || echo "?")
+            written_h=$(numfmt --to=iec --suffix=B "$written_bytes" 2>/dev/null || echo "?")
+            rate_h=$(numfmt --to=iec --suffix=B/s "$rate_bps" 2>/dev/null || echo "?")
+
+            if (( since_disk_change >= stall_limit && since_screen_change >= stall_limit )); then
+                phase="STALLED (disk=${since_disk_change}s screen=${since_screen_change}s)"
+            elif (( rate_bps > 1024*1024 )); then
+                phase="installing-windows"
+            elif (( rate_bps > 0 )); then
+                phase="configuring"
+            else
+                phase="reboot-or-idle (d=${since_disk_change}s s=${since_screen_change}s)"
+            fi
+
+            printf "  %-8s  %-10s  %-12s  %-10s  %s\n" \
+                "$(printf '%dm%02ds' $((elapsed/60)) $((elapsed%60)))" \
+                "$disk_h" "$written_h" "$rate_h" "$phase"
+
+            last_disk_bytes=$now_disk_bytes
+
+            if (( since_disk_change >= stall_limit && since_screen_change >= stall_limit )); then
+                echo ""
+                echo "  [!] STALL detected — killing QEMU and restarting (attempt $((restart_count+1))/${max_restarts})"
+                echo "quit" | nc -q1 localhost "$build_monitor" >/dev/null 2>&1 || kill "$pid" 2>/dev/null || true
+                sleep 3
+                kill -9 "$pid" 2>/dev/null || true
+                rm -f "$build_pid"
+                break
+            fi
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    if ! kill -0 "$pid" 2>/dev/null && [[ ! -f "$build_pid" ]] && (( since_disk_change < stall_limit || since_screen_change < stall_limit )); then
+        vm_shutdown_clean=1
+        break
+    fi
+    if kill -0 "$pid" 2>/dev/null; then
+        # Fell out of inner loop without stall (shouldn't happen, but be safe)
+        vm_shutdown_clean=1
+        break
+    fi
+    if ! [[ -f "$build_pid" ]]; then
+        # QEMU exited cleanly (Windows shutdown)
+        if (( since_disk_change < stall_limit )); then
+            vm_shutdown_clean=1
+            break
+        fi
+    fi
+
+    # Stall detected. Restart QEMU with same disks + NVRAM (no wipe).
+    restart_count=$(( restart_count + 1 ))
+    echo ""
+    echo "  Restart #$restart_count: relaunching QEMU with preserved disk + NVRAM..."
 
     qemu-system-aarch64 \
         -nodefaults \
@@ -598,103 +823,45 @@ cmd_image_build() {
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${build_tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${build_mac}" \
+        -drive "file=${iso_file},id=cdrom0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
+        -device "usb-storage,drive=cdrom0,removable=on" \
         -drive "file=${virtio_iso},id=virtio0,format=raw,cache=unsafe,readonly=on,media=cdrom,if=none" \
         -device "usb-storage,drive=virtio0,removable=on" \
+        -drive "file=${build_usb},id=answer0,format=raw,cache=unsafe,readonly=on,if=none" \
+        -device "usb-storage,drive=answer0,removable=on" \
         -object "iothread,id=io0" \
-        -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
-        -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=0" \
+        -drive "file=${build_esp},id=esp0,format=raw,cache=unsafe,if=none" \
+        -device "scsi-hd,drive=esp0,bus=scsi0.0,lun=0" \
+        -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
+        -device "scsi-hd,drive=data0,bus=scsi0.0,lun=1" \
         -drive "file=${build_rom},if=pflash,unit=0,format=raw,readonly=on" \
         -drive "file=${build_vars},if=pflash,unit=1,format=raw" \
         -object "rng-random,id=rng0,filename=/dev/urandom" \
         -device "virtio-rng-pci,rng=rng0" \
         -rtc base=localtime
 
-    sleep 1
-
+    local rs_wait=0
+    while [[ ! -f "$build_pid" ]] && (( rs_wait < 10 )); do
+        sleep 1
+        rs_wait=$((rs_wait + 1))
+    done
     if [[ ! -f "$build_pid" ]]; then
-        echo "Failed to start QEMU for phase 2. Check $build_log"
+        echo "  Failed to relaunch QEMU (no PID file). Check $build_log"
+        break
+    fi
+    pid=$(cat "$build_pid")
+    echo "  QEMU relaunched (PID: $pid)"
+    done  # end restart-on-stall outer loop
+
+    if (( vm_shutdown_clean == 0 )); then
+        echo ""
+        echo "  FATAL: VM failed to complete install after $max_restarts restart attempts."
+        echo "  Artifacts preserved for inspection:"
+        echo "    $build_disk"
+        echo "    $build_vars"
         exit 1
     fi
-
-    pid=$(cat "$build_pid")
-    echo "  QEMU started (PID: $pid)"
-    echo ""
-    echo "Watch progress:"
-    echo "  Latest screen:  feh $screen_ppm      (auto-updates every 60s)"
-    echo "  VNC viewer:     vncviewer localhost${build_vnc}"
-    echo "  Manual control: telnet localhost ${build_monitor}"
-    echo "  Force stop:     echo quit | nc -q1 localhost ${build_monitor}"
-    echo ""
-    echo "Waiting for install to complete and VM to shut down..."
-    echo "  Soft cap: ${build_timeout}s (advisory only — VM will not be killed)"
-    echo "  The VM shuts itself down when FirstLogonCommands finish."
-    echo ""
-    printf "  %-8s  %-10s  %-12s  %-10s  %s\n" "ELAPSED" "DISK" "WRITTEN" "RATE" "PHASE"
-
-    # Wait for VM to shut down (FirstLogonCommands issue shutdown /s after setup).
-    local soft_timeout_warned=0
-    local last_disk_mtime
-    last_disk_mtime=$(stat -c %Y "$build_disk" 2>/dev/null || echo 0)
-    local last_disk_change=$elapsed
-    last_disk_bytes=$(_disk_allocated_bytes "$build_disk")
-    local start_disk_bytes=$last_disk_bytes
-    while kill -0 "$pid" 2>/dev/null; do
-        local now_disk_mtime now_disk_bytes
-        now_disk_mtime=$(stat -c %Y "$build_disk" 2>/dev/null || echo 0)
-        now_disk_bytes=$(_disk_allocated_bytes "$build_disk")
-
-        if [[ "$now_disk_mtime" != "$last_disk_mtime" ]]; then
-            last_disk_mtime="$now_disk_mtime"
-            last_disk_change=$elapsed
-        fi
-        local since_change=$(( elapsed - last_disk_change ))
-
-        # Advisory soft timeout — warn once, do not kill
-        if (( elapsed >= build_timeout && soft_timeout_warned == 0 )); then
-            echo ""
-            echo "  [!] Build has been running ${elapsed}s (>${build_timeout}s soft cap)."
-            echo "      VM is NOT being killed. Inspect via VNC: localhost${build_vnc}"
-            echo "      Force stop: echo quit | nc -q1 localhost ${build_monitor}"
-            echo ""
-            soft_timeout_warned=1
-        fi
-
-        # Screendump every 60s via QEMU monitor. Silently ignore failures.
-        if (( elapsed > 0 && elapsed % 60 == 0 )); then
-            echo "screendump ${screen_ppm}.tmp" | nc -q1 localhost "$build_monitor" \
-                >/dev/null 2>&1 && mv -f "${screen_ppm}.tmp" "$screen_ppm" 2>/dev/null || true
-        fi
-
-        # Progress line every 30s
-        if (( elapsed % 30 == 0 && elapsed > 0 )); then
-            local delta_bytes=$(( now_disk_bytes - last_disk_bytes ))
-            local written_bytes=$(( now_disk_bytes - start_disk_bytes ))
-            local rate_bps=$(( delta_bytes / 30 ))
-            local disk_h written_h rate_h phase
-            disk_h=$(numfmt --to=iec --suffix=B "$now_disk_bytes" 2>/dev/null || echo "?")
-            written_h=$(numfmt --to=iec --suffix=B "$written_bytes" 2>/dev/null || echo "?")
-            rate_h=$(numfmt --to=iec --suffix=B/s "$rate_bps" 2>/dev/null || echo "?")
-
-            if (( since_change >= stall_threshold )); then
-                phase="STALLED (no writes ${since_change}s)"
-            elif (( rate_bps > 1024*1024 )); then
-                phase="installing-windows"
-            elif (( rate_bps > 0 )); then
-                phase="configuring"
-            else
-                phase="reboot-or-idle"
-            fi
-
-            printf "  %-8s  %-10s  %-12s  %-10s  %s\n" \
-                "$(printf '%dm%02ds' $((elapsed/60)) $((elapsed%60)))" \
-                "$disk_h" "$written_h" "$rate_h" "$phase"
-
-            last_disk_bytes=$now_disk_bytes
-        fi
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
 
     echo ""
     echo "  VM shut down after $((elapsed / 60))m $((elapsed % 60))s"
@@ -710,7 +877,7 @@ cmd_image_build() {
     cp "$build_rom" "$BASE_WINDOWS_ROM"
 
     echo "Cleaning up build files..."
-    rm -f "$build_disk" "$build_vars" "$build_rom" "$build_esp" "$build_log"
+    rm -f "$build_disk" "$build_vars" "$build_rom" "$build_esp" "$build_usb" "$build_log"
 
     # Clean up TAP (will recreate for verification)
     if ip link show "$build_tap" &>/dev/null; then

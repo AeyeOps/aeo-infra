@@ -136,24 +136,59 @@ build_boot_esp() {
         fi
     done
 
-    # Use the pre-built BCD that's been rewritten for partition boot.
-    # It references ESP partition GUID F5F5F5F5-6A6A-7B7B-8C8C-9D9D9D9D9D9D
-    # which must match the sgdisk -u flag below.
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-images"
-    local bcd_source="${script_dir}/bcd-esp.bin"
+    # Inject VirtIO SCSI driver into boot.wim so WinPE can see the
+    # virtio-scsi build disk (where Autounattend.xml lives) at boot.
+    # Without this, WinPE has no SCSI driver and can't discover the
+    # answer file or the install target disk.
+    local virtio_iso="${STORAGE_DIR}/virtio-win.iso"
+    if [[ -f "$virtio_iso" ]] && command -v wimlib-imagex >/dev/null 2>&1; then
+        echo "    Injecting VirtIO SCSI driver into boot.wim..."
+        local drv_dir="$work/drivers"
+        mkdir -p "$drv_dir"
+        7z e "$virtio_iso" -o"$drv_dir" \
+            vioscsi/w11/ARM64/vioscsi.sys \
+            vioscsi/w11/ARM64/vioscsi.inf \
+            vioscsi/w11/ARM64/vioscsi.cat \
+            -aoa -bso0 -bsp0
+        if [[ -f "$drv_dir/vioscsi.inf" ]]; then
+            # boot.wim typically has 2 images; inject into both
+            local img_count
+            img_count=$(wimlib-imagex info "$work/boot.wim" | grep "Image Count" | awk '{print $3}')
+            for idx in $(seq 1 "${img_count:-2}"); do
+                wimlib-imagex update "$work/boot.wim" "$idx" \
+                    --command "add $drv_dir/vioscsi.sys /Windows/System32/drivers/vioscsi.sys" \
+                    --command "add $drv_dir/vioscsi.inf /Windows/INF/vioscsi.inf" \
+                    --command "add $drv_dir/vioscsi.cat /Windows/INF/vioscsi.cat" \
+                    2>/dev/null || true
+            done
+            echo "    VirtIO SCSI driver injected into $img_count WIM image(s)"
+        else
+            echo "    WARNING: vioscsi driver not found in VirtIO ISO, skipping injection"
+        fi
+    else
+        echo "    WARNING: Skipping VirtIO driver injection (wimtools or virtio ISO missing)"
+    fi
+
+    # Extract the original BCD from the ISO. The original uses device type 5
+    # ("boot device" = the partition bootmgfw was loaded from). When bootmgfw
+    # runs from the ESP, [boot] resolves to the ESP — where boot.wim lives.
+    # Previous experiments with stale NVRAM confounded this; with fresh NVRAM
+    # (rm + truncate) the original BCD should work unmodified.
+    echo "    Extracting original BCD from ISO..."
+    7z e "$iso_path" -o"$work" "efi/microsoft/boot/bcd" -aoa -bso0 -bsp0
+    local bcd_source="$work/bcd"
     if [[ ! -f "$bcd_source" ]]; then
-        echo "    ERROR: Pre-built BCD not found: $bcd_source" >&2
+        echo "    ERROR: BCD not found in ISO" >&2
         rm -rf "$work"
         return 1
     fi
-    echo "    Using pre-built BCD for partition boot..."
 
     echo "    Building 2G ESP disk..."
     rm -f "$esp_path"
     truncate -s 2G "$esp_path"
     sgdisk -Z "$esp_path" >/dev/null 2>&1
     sgdisk -n 1:2048:+1900M -t 1:EF00 -c 1:ESP \
+        -U A0A0A0A0-B1B1-C2C2-D3D3-E4E4E4E4E4E4 \
         -u 1:F5F5F5F5-6A6A-7B7B-8C8C-9D9D9D9D9D9D \
         "$esp_path" >/dev/null 2>&1
 
@@ -172,6 +207,14 @@ build_boot_esp() {
     cp "$bcd_source"         "$mnt/EFI/Microsoft/Boot/BCD"
     cp "$work/boot.sdi"      "$mnt/boot/boot.sdi"
     cp "$work/boot.wim"      "$mnt/sources/boot.wim"
+
+    # Place Autounattend.xml on the ESP so WinPE finds it before
+    # VirtIO drivers are loaded (WinPE can see the ESP but not the
+    # SCSI build disk until vioscsi is injected).
+    if [[ -f "$AUTOUNATTEND_XML" ]]; then
+        cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
+        echo "    Placed Autounattend.xml on ESP"
+    fi
 
     # Safety-net startup.nsh — only runs if firmware auto-boot fails
     # and drops to the embedded UEFI Shell. Tries multiple FS paths

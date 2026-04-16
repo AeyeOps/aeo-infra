@@ -54,7 +54,7 @@
       <!-- UEFI/GPT disk layout: EFI (100MB) + MSR (16MB) + Windows (rest) -->
       <DiskConfiguration>
         <Disk wcm:action="add">
-          <DiskID>0</DiskID>
+          <DiskID>2</DiskID>
           <WillWipeDisk>true</WillWipeDisk>
           <CreatePartitions>
             <CreatePartition wcm:action="add">
@@ -105,7 +105,7 @@
             </MetaData>
           </InstallFrom>
           <InstallTo>
-            <DiskID>0</DiskID>
+            <DiskID>2</DiskID>
             <PartitionID>3</PartitionID>
           </InstallTo>
         </OSImage>
