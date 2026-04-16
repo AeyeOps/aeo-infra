@@ -113,7 +113,6 @@ build_boot_esp() {
     # Install missing dependencies automatically
     local missing_pkgs=()
     command -v 7z       >/dev/null 2>&1 || missing_pkgs+=(p7zip-full)
-    command -v hivexsh  >/dev/null 2>&1 || missing_pkgs+=(libhivex-bin)
     command -v sgdisk   >/dev/null 2>&1 || missing_pkgs+=(gdisk)
     command -v mkfs.fat >/dev/null 2>&1 || missing_pkgs+=(dosfstools)
     if (( ${#missing_pkgs[@]} > 0 )); then
@@ -124,12 +123,11 @@ build_boot_esp() {
     echo "    Extracting boot files from ISO..."
     7z e "$iso_path" -o"$work" \
         efi/boot/bootaa64.efi \
-        efi/microsoft/boot/bcd \
         boot/boot.sdi \
         sources/boot.wim \
         -aoa -bso0 -bsp0
 
-    for f in bootaa64.efi bcd boot.sdi boot.wim; do
+    for f in bootaa64.efi boot.sdi boot.wim; do
         if [[ ! -f "$work/$f" ]]; then
             echo "    ERROR: $f not found in ISO" >&2
             rm -rf "$work"
@@ -137,44 +135,18 @@ build_boot_esp() {
         fi
     done
 
-    echo "    Rewriting BCD for partition boot..."
-    cp "$work/bcd" "$work/bcd-modified"
-
-    # ESP partition GUID — must match the sgdisk -u flag below
-    local esp_guid_le="f5,f5,f5,f5,6a,6a,7b,7b,8c,8c,9d,9d,9d,9d,9d,9d"
-    local disk_sig="00,00,00,00,00,00,00,00,a0,a0,a0,a0,b1,b1,c2,c2,d3,d3,e4,e4,e4,e4,e4,e4"
-    local ramdisk_guid="c8,dc,19,76,fe,fa,d9,11,b4,11,00,04,76,eb,a2,5f"
-    local boot_wim_path="5c,00,73,00,6f,00,75,00,72,00,63,00,65,00,73,00,5c,00,62,00,6f,00,6f,00,74,00,2e,00,77,00,69,00,6d,00,00,00"
-
-    local device_blob="${ramdisk_guid},00,00,00,00,01,00,00,00,a0,00,00,00,00,00,00,00,03,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,01,00,00,00,78,00,00,00,06,00,00,00,06,00,00,00,00,00,00,00,48,00,00,00,00,00,00,00,${esp_guid_le},00,00,00,00,00,00,00,00,${disk_sig},00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,${boot_wim_path}"
-    local ramdisk_blob="00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,06,00,00,00,00,00,00,00,48,00,00,00,00,00,00,00,${esp_guid_le},00,00,00,00,00,00,00,00,${disk_sig},00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00"
-
-    # Write hivexsh commands to a file.
-    # Format is hex:<type>:<bytes> (not hex(3): which is Windows regedit format).
-    # Type 3 = REG_BINARY.
-    cat > "$work/patch.hivex" <<EOF
-cd \\Objects\\{7619dcc9-fafe-11d9-b411-000476eba25f}\\Elements\\11000001
-setval 1
-Element
-hex:3:${device_blob}
-
-cd \\Objects\\{7619dcc9-fafe-11d9-b411-000476eba25f}\\Elements\\21000001
-setval 1
-Element
-hex:3:${device_blob}
-
-cd \\Objects\\{7619dcc8-fafe-11d9-b411-000476eba25f}\\Elements\\31000003
-setval 1
-Element
-hex:3:${ramdisk_blob}
-
-commit $work/bcd-modified
-EOF
-    if ! hivexsh -w "$work/bcd-modified" < "$work/patch.hivex"; then
-        echo "    ERROR: hivexsh BCD rewrite failed" >&2
+    # Use the pre-built BCD that's been rewritten for partition boot.
+    # It references ESP partition GUID F5F5F5F5-6A6A-7B7B-8C8C-9D9D9D9D9D9D
+    # which must match the sgdisk -u flag below.
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-images"
+    local bcd_source="${script_dir}/bcd-esp.bin"
+    if [[ ! -f "$bcd_source" ]]; then
+        echo "    ERROR: Pre-built BCD not found: $bcd_source" >&2
         rm -rf "$work"
         return 1
     fi
+    echo "    Using pre-built BCD for partition boot..."
 
     echo "    Building 2G ESP disk..."
     rm -f "$esp_path"
@@ -196,7 +168,7 @@ EOF
     mkdir -p "$mnt/EFI/BOOT" "$mnt/EFI/Microsoft/Boot" \
              "$mnt/boot" "$mnt/sources"
     cp "$work/bootaa64.efi" "$mnt/EFI/BOOT/BOOTAA64.EFI"
-    cp "$work/bcd-modified"  "$mnt/EFI/Microsoft/Boot/BCD"
+    cp "$bcd_source"         "$mnt/EFI/Microsoft/Boot/BCD"
     cp "$work/boot.sdi"      "$mnt/boot/boot.sdi"
     cp "$work/boot.wim"      "$mnt/sources/boot.wim"
 
