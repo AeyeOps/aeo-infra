@@ -340,8 +340,8 @@ cmd_image_build() {
     mkdir -p "$BASE_IMAGE_DIR"
 
     # Create build disk with startup.nsh + Autounattend.xml
-    echo "Creating 64G build disk..."
-    qemu-img create -f raw "$build_disk" 64G
+    echo "Creating 16G build disk..."
+    qemu-img create -f raw "$build_disk" 16G
     if ! seed_build_disk "$build_disk"; then
         echo "Failed to seed build disk. Cannot proceed." >&2
         exit 1
