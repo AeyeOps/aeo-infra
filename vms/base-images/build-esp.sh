@@ -72,17 +72,17 @@ hivexsh -w "$WORK/bcd-modified" <<HIVEX
 cd \\Objects\\{7619dcc9-fafe-11d9-b411-000476eba25f}\\Elements\\11000001
 setval 1
 Element
-hex(3):${DEVICE_BLOB}
+hex:3:${DEVICE_BLOB}
 
 cd \\Objects\\{7619dcc9-fafe-11d9-b411-000476eba25f}\\Elements\\21000001
 setval 1
 Element
-hex(3):${DEVICE_BLOB}
+hex:3:${DEVICE_BLOB}
 
 cd \\Objects\\{7619dcc8-fafe-11d9-b411-000476eba25f}\\Elements\\31000003
 setval 1
 Element
-hex(3):${RAMDISK_BLOB}
+hex:3:${RAMDISK_BLOB}
 
 commit $WORK/bcd-modified
 HIVEX

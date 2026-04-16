@@ -149,24 +149,32 @@ build_boot_esp() {
     local device_blob="${ramdisk_guid},00,00,00,00,01,00,00,00,a0,00,00,00,00,00,00,00,03,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,01,00,00,00,78,00,00,00,06,00,00,00,06,00,00,00,00,00,00,00,48,00,00,00,00,00,00,00,${esp_guid_le},00,00,00,00,00,00,00,00,${disk_sig},00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,${boot_wim_path}"
     local ramdisk_blob="00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,06,00,00,00,00,00,00,00,48,00,00,00,00,00,00,00,${esp_guid_le},00,00,00,00,00,00,00,00,${disk_sig},00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00"
 
-    hivexsh -w "$work/bcd-modified" <<HIVEX
+    # Write hivexsh commands to a file.
+    # Format is hex:<type>:<bytes> (not hex(3): which is Windows regedit format).
+    # Type 3 = REG_BINARY.
+    cat > "$work/patch.hivex" <<EOF
 cd \\Objects\\{7619dcc9-fafe-11d9-b411-000476eba25f}\\Elements\\11000001
 setval 1
 Element
-hex(3):${device_blob}
+hex:3:${device_blob}
 
 cd \\Objects\\{7619dcc9-fafe-11d9-b411-000476eba25f}\\Elements\\21000001
 setval 1
 Element
-hex(3):${device_blob}
+hex:3:${device_blob}
 
 cd \\Objects\\{7619dcc8-fafe-11d9-b411-000476eba25f}\\Elements\\31000003
 setval 1
 Element
-hex(3):${ramdisk_blob}
+hex:3:${ramdisk_blob}
 
 commit $work/bcd-modified
-HIVEX
+EOF
+    if ! hivexsh -w "$work/bcd-modified" < "$work/patch.hivex"; then
+        echo "    ERROR: hivexsh BCD rewrite failed" >&2
+        rm -rf "$work"
+        return 1
+    fi
 
     echo "    Building 2G ESP disk..."
     rm -f "$esp_path"
