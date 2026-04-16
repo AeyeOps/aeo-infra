@@ -54,14 +54,8 @@ windows_base_image_status() {
 # ─── Build Disk Seeding ───────────────────────────────────────────────
 
 # Seed the build disk with a small FAT32 data partition containing
-# startup.nsh and Autounattend.xml.
-#
-# startup.nsh is auto-executed by TianoCore's embedded UEFI Shell
-# when cdboot times out (ARM64). It launches bootmgfw.efi from the
-# Windows ISO's USB filesystem.
-#
-# The partition uses type 0700 (basic data, not ESP) so that WinPE
-# assigns it a drive letter and discovers Autounattend.xml.
+# Autounattend.xml. The partition uses type 0700 (basic data, not ESP)
+# so that WinPE assigns it a drive letter and discovers the answer file.
 # Windows Setup's WillWipeDisk=true wipes this partition later.
 #
 # Args: disk_path
@@ -85,27 +79,136 @@ seed_build_disk() {
     mnt=$(mktemp -d)
     mount "$loop_dev" "$mnt"
 
-    # startup.nsh: launched by UEFI Shell, boots Windows from ISO
-    cat > "$mnt/startup.nsh" << 'STARTUP'
-@echo -off
-echo Launching Windows Boot Manager...
-FS0:\efi\boot\bootaa64.efi
-FS1:\efi\boot\bootaa64.efi
-FS2:\efi\boot\bootaa64.efi
-FS3:\efi\boot\bootaa64.efi
-FS4:\efi\boot\bootaa64.efi
-FS5:\efi\boot\bootaa64.efi
-echo ERROR: bootaa64.efi not found
-map -b
-STARTUP
-
     cp "$AUTOUNATTEND_XML" "$mnt/Autounattend.xml"
 
     umount "$mnt"
     rmdir "$mnt"
     losetup -d "$loop_dev"
 
-    echo "    Seeded build disk with startup.nsh + Autounattend.xml"
+    echo "    Seeded build disk with Autounattend.xml"
+    return 0
+}
+
+# ─── Boot ESP Construction ────────────────────────────────────────────
+
+# Build a bootable ESP disk with a BCD rewritten for hard-disk boot.
+#
+# The Windows ISO's BCD expects CD-ramdisk device class, so bootmgfw
+# silently exits when launched from a non-CD context. This function
+# extracts boot files from the ISO, rewrites the BCD device elements
+# to reference a GPT partition, and packs everything into a FAT32 ESP.
+#
+# After cdboot on the ISO times out (~15s), firmware falls through to
+# this ESP and boots Windows Setup deterministically — no input
+# injection, no retry wrapper.
+#
+# Args: iso_path esp_output_path
+# Requires: 7z, hivexsh, sgdisk, losetup, mkfs.fat
+build_boot_esp() {
+    local iso_path="$1"
+    local esp_path="$2"
+    local work
+    work=$(mktemp -d)
+
+    for cmd in 7z hivexsh sgdisk mkfs.fat; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            echo "    ERROR: $cmd not found. Install:" >&2
+            echo "      apt install p7zip-full libhivex-bin gdisk dosfstools" >&2
+            rm -rf "$work"
+            return 1
+        fi
+    done
+
+    echo "    Extracting boot files from ISO..."
+    7z e "$iso_path" -o"$work" \
+        efi/boot/bootaa64.efi \
+        efi/microsoft/boot/BCD \
+        boot/boot.sdi \
+        sources/boot.wim \
+        -aoa -bso0 -bsp0
+
+    for f in bootaa64.efi BCD boot.sdi boot.wim; do
+        if [[ ! -f "$work/$f" ]]; then
+            echo "    ERROR: $f not found in ISO" >&2
+            rm -rf "$work"
+            return 1
+        fi
+    done
+
+    echo "    Rewriting BCD for partition boot..."
+    cp "$work/BCD" "$work/bcd-modified"
+
+    # ESP partition GUID — must match the sgdisk -u flag below
+    local esp_guid_le="f5,f5,f5,f5,6a,6a,7b,7b,8c,8c,9d,9d,9d,9d,9d,9d"
+    local disk_sig="00,00,00,00,00,00,00,00,a0,a0,a0,a0,b1,b1,c2,c2,d3,d3,e4,e4,e4,e4,e4,e4"
+    local ramdisk_guid="c8,dc,19,76,fe,fa,d9,11,b4,11,00,04,76,eb,a2,5f"
+    local boot_wim_path="5c,00,73,00,6f,00,75,00,72,00,63,00,65,00,73,00,5c,00,62,00,6f,00,6f,00,74,00,2e,00,77,00,69,00,6d,00,00,00"
+
+    local device_blob="${ramdisk_guid},00,00,00,00,01,00,00,00,a0,00,00,00,00,00,00,00,03,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,01,00,00,00,78,00,00,00,06,00,00,00,06,00,00,00,00,00,00,00,48,00,00,00,00,00,00,00,${esp_guid_le},00,00,00,00,00,00,00,00,${disk_sig},00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,${boot_wim_path}"
+    local ramdisk_blob="00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,06,00,00,00,00,00,00,00,48,00,00,00,00,00,00,00,${esp_guid_le},00,00,00,00,00,00,00,00,${disk_sig},00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00"
+
+    hivexsh -w "$work/bcd-modified" <<HIVEX
+cd \\Objects\\{7619dcc9-fafe-11d9-b411-000476eba25f}\\Elements\\11000001
+setval 1
+Element
+hex(3):${device_blob}
+
+cd \\Objects\\{7619dcc9-fafe-11d9-b411-000476eba25f}\\Elements\\21000001
+setval 1
+Element
+hex(3):${device_blob}
+
+cd \\Objects\\{7619dcc8-fafe-11d9-b411-000476eba25f}\\Elements\\31000003
+setval 1
+Element
+hex(3):${ramdisk_blob}
+
+commit $work/bcd-modified
+HIVEX
+
+    echo "    Building 2G ESP disk..."
+    rm -f "$esp_path"
+    truncate -s 2G "$esp_path"
+    sgdisk -Z "$esp_path" >/dev/null 2>&1
+    sgdisk -n 1:2048:+1900M -t 1:EF00 -c 1:ESP \
+        -u 1:F5F5F5F5-6A6A-7B7B-8C8C-9D9D9D9D9D9D \
+        "$esp_path" >/dev/null 2>&1
+
+    local loop_dev
+    loop_dev=$(losetup --find --show --offset $((2048*512)) \
+        --sizelimit $((1900*1024*1024)) "$esp_path")
+    mkfs.fat -F 32 -n ESP "$loop_dev" >/dev/null
+
+    local mnt
+    mnt=$(mktemp -d)
+    mount "$loop_dev" "$mnt"
+
+    mkdir -p "$mnt/EFI/BOOT" "$mnt/EFI/Microsoft/Boot" \
+             "$mnt/boot" "$mnt/sources"
+    cp "$work/bootaa64.efi" "$mnt/EFI/BOOT/BOOTAA64.EFI"
+    cp "$work/bcd-modified"  "$mnt/EFI/Microsoft/Boot/BCD"
+    cp "$work/boot.sdi"      "$mnt/boot/boot.sdi"
+    cp "$work/boot.wim"      "$mnt/sources/boot.wim"
+
+    # Safety-net startup.nsh — only runs if firmware auto-boot fails
+    # and drops to the embedded UEFI Shell. Tries multiple FS paths
+    # since numbering depends on which devices are attached.
+    cat > "$mnt/startup.nsh" << 'NSH'
+@echo -off
+map -r
+FS0:\EFI\BOOT\BOOTAA64.EFI
+FS1:\EFI\BOOT\BOOTAA64.EFI
+FS2:\EFI\BOOT\BOOTAA64.EFI
+FS3:\EFI\BOOT\BOOTAA64.EFI
+FS4:\EFI\BOOT\BOOTAA64.EFI
+NSH
+
+    umount "$mnt"
+    rmdir "$mnt"
+    losetup -d "$loop_dev"
+    rm -rf "$work"
+
+    echo "    ESP built: $(du -h "$esp_path" | cut -f1)"
     return 0
 }
 
