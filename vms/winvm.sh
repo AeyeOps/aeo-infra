@@ -496,10 +496,11 @@ cmd_image_build() {
             disk_h=$(numfmt --to=iec --suffix=B "$now_disk_bytes" 2>/dev/null || echo "?")
             rate_h=$(numfmt --to=iec --suffix=B/s "$rate_bps" 2>/dev/null || echo "?")
 
-            # Refresh screen capture every 30s
+            # Refresh screen capture every 30s (PPM + PNG for Windows viewing)
             if [[ -f "$vnc_tool" ]]; then
                 python3 "$vnc_tool" --host 127.0.0.1 --port "$vnc_port" \
                     --screenshot "$screen_ppm" 2>/dev/null || true
+                python3 -c "from PIL import Image; Image.open('$screen_ppm').save('${screen_ppm%.ppm}.png')" 2>/dev/null || true
             fi
 
             if (( elapsed < 60 )); then phase="uefi-boot"
