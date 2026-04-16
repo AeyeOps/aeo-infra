@@ -233,7 +233,7 @@ def setup_server(
                 raise typer.Exit(1)
         except subprocess.TimeoutExpired:
             error("Timed out writing to smb.conf")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
 
     # --- 6. Set SMB password ---
     info(f"Setting SMB password for user '{smb_user}'...")
@@ -345,9 +345,7 @@ def add_user(
 def setup_client(
     host: str = typer.Option(..., "--host", "-h", help="Windows SSH host"),
     port: int = typer.Option(22, "--port", "-p", help="SSH port"),
-    server: str = typer.Option(
-        ..., "--server", "-s", help="SMB server hostname or IP"
-    ),
+    server: str = typer.Option(..., "--server", "-s", help="SMB server hostname or IP"),
     share: str = typer.Option("shared", "--share", help="Share name"),
     drive: str = typer.Option("Z:", "--drive", "-d", help="Windows drive letter"),
     user: str = typer.Option(..., "--user", "-u", help="SMB username"),
@@ -441,7 +439,8 @@ def setup_client(
         "    Set-ItemProperty -Path $regPath -Name 'EnableLinkedConnections' -Value 1 -Type DWord",
         "    Write-Host 'EnableLinkedConnections set' -ForegroundColor Green",
         "} catch {",
-        "    Write-Host 'WARNING: Could not set EnableLinkedConnections (run as admin)' -ForegroundColor Yellow",
+        "    Write-Host 'WARNING: Could not set EnableLinkedConnections (run as admin)'"
+        " -ForegroundColor Yellow",
         "}",
         "",
         "# Step 5: Create reconnect script in Startup folder",
@@ -454,14 +453,15 @@ def setup_client(
         '"@',
         "try {",
         "    $cmdContent | Set-Content -Path $cmdPath -Force",
-        "    Write-Host \"Startup script created: $cmdPath\" -ForegroundColor Green",
+        '    Write-Host "Startup script created: $cmdPath" -ForegroundColor Green',
         "} catch {",
-        "    Write-Host \"WARNING: Could not create startup script: $_\" -ForegroundColor Yellow",
+        '    Write-Host "WARNING: Could not create startup script: $_" -ForegroundColor Yellow',
         "}",
         "",
         "Write-Host ''",
         f"Write-Host '{drive} is now mapped to {smb_path}' -ForegroundColor Cyan",
-        "Write-Host 'Note: Log off and back on for EnableLinkedConnections to take effect' -ForegroundColor Yellow",
+        "Write-Host 'Note: Log off and back on for EnableLinkedConnections to take effect'"
+        " -ForegroundColor Yellow",
         "Write-Host ''",
         "Read-Host 'Press Enter to exit'",
     ]
@@ -475,10 +475,14 @@ def setup_client(
         result = subprocess.run(
             [
                 "ssh",
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=30",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-p", str(port),
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=30",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-p",
+                str(port),
                 host,
                 ps_write_cmd,
             ],
@@ -494,7 +498,7 @@ def setup_client(
             raise typer.Exit(1)
     except subprocess.TimeoutExpired:
         error("Timed out writing script to Windows")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     # --- 6. Print instructions ---
     section("SMB Client Setup Complete")
