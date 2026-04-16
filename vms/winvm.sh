@@ -435,9 +435,9 @@ cmd_image_build() {
         -object "iothread,id=io0" \
         -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
         -drive "file=${build_esp},id=esp0,format=raw,cache=unsafe,readonly=on,if=none" \
-        -device "scsi-hd,drive=esp0,bus=scsi0.0" \
+        -device "scsi-hd,drive=esp0,bus=scsi0.0,lun=0" \
         -drive "file=${build_disk},id=data0,format=raw,cache=none,aio=native,discard=on,detect-zeroes=on,if=none" \
-        -device "scsi-hd,drive=data0,bus=scsi0.0" \
+        -device "scsi-hd,drive=data0,bus=scsi0.0,lun=1" \
         -drive "file=${build_rom},if=pflash,unit=0,format=raw,readonly=on" \
         -drive "file=${build_vars},if=pflash,unit=1,format=raw" \
         -object "rng-random,id=rng0,filename=/dev/urandom" \
