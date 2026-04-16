@@ -506,6 +506,11 @@ cmd_image_build() {
                 # OCR the screenshot for status reporting
                 if command -v tesseract >/dev/null 2>&1 && [[ -f "$screen_png" ]]; then
                     screen_text=$(tesseract "$screen_png" stdout 2>/dev/null || true)
+                    if [[ -n "$screen_text" ]]; then
+                        echo "  --- screen OCR ---"
+                        echo "$screen_text" | sed '/^$/d' | sed 's/^/  | /'
+                        echo "  ---"
+                    fi
                 fi
             fi
 
