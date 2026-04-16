@@ -389,6 +389,11 @@ cmd_image_build() {
     }
 
     local screen_ppm="/tmp/winbuild-latest.ppm"
+    local vnc_tool
+    vnc_tool="$(cd "$(dirname "$0")" && pwd)/base-images/vnc_full.py"
+    local vnc_port
+    vnc_port=$(( 5900 + ${build_vnc#:} ))  # :9 → 5909
+    local stall_warned=0
 
     # ── PHASE 1: Boot WinPE from ESP, extract Windows image ─────────────
     #
@@ -500,6 +505,23 @@ cmd_image_build() {
             printf "  %-8s  %-10s  %-12s  %-10s  %s\n" \
                 "$(printf '%dm%02ds' $((elapsed/60)) $((elapsed%60)))" \
                 "$disk_h" "" "$rate_h" "$phase"
+
+            # Stall detection: if disk hasn't grown in 2 min, grab VNC screen
+            if (( rate_bps == 0 && elapsed > 120 && stall_warned == 0 )); then
+                stall_warned=1
+                echo ""
+                echo "  [!] No disk activity for 2+ minutes. Capturing screen..."
+                if [[ -f "$vnc_tool" ]]; then
+                    python3 "$vnc_tool" --host 127.0.0.1 --port "$vnc_port" \
+                        --screenshot "$screen_ppm" 2>/dev/null || true
+                    echo "  [!] Screenshot saved: $screen_ppm"
+                fi
+                echo "  [!] Check VNC: vncviewer localhost${build_vnc}"
+                echo "  [!] If stuck at 'Press any key': cdboot didn't time out (stale NVRAM?)"
+                echo "  [!] If stuck at Shell prompt: ESP boot failed, check BOOT.md"
+                echo "  [!] If stuck at BdsDxe 'starting HARDDISK': bootmgfw hung (BCD issue)"
+                echo ""
+            fi
 
             last_disk_bytes=$now_disk_bytes
         fi
