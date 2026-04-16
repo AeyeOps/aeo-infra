@@ -110,14 +110,16 @@ build_boot_esp() {
     local work
     work=$(mktemp -d)
 
-    for cmd in 7z hivexsh sgdisk mkfs.fat; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            echo "    ERROR: $cmd not found. Install:" >&2
-            echo "      apt install p7zip-full libhivex-bin gdisk dosfstools" >&2
-            rm -rf "$work"
-            return 1
-        fi
-    done
+    # Install missing dependencies automatically
+    local missing_pkgs=()
+    command -v 7z       >/dev/null 2>&1 || missing_pkgs+=(p7zip-full)
+    command -v hivexsh  >/dev/null 2>&1 || missing_pkgs+=(libhivex-bin)
+    command -v sgdisk   >/dev/null 2>&1 || missing_pkgs+=(gdisk)
+    command -v mkfs.fat >/dev/null 2>&1 || missing_pkgs+=(dosfstools)
+    if (( ${#missing_pkgs[@]} > 0 )); then
+        echo "    Installing ${missing_pkgs[*]}..."
+        apt-get install -y "${missing_pkgs[@]}"
+    fi
 
     echo "    Extracting boot files from ISO..."
     7z e "$iso_path" -o"$work" \
