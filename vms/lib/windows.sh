@@ -124,12 +124,12 @@ build_boot_esp() {
     echo "    Extracting boot files from ISO..."
     7z e "$iso_path" -o"$work" \
         efi/boot/bootaa64.efi \
-        efi/microsoft/boot/BCD \
+        efi/microsoft/boot/bcd \
         boot/boot.sdi \
         sources/boot.wim \
         -aoa -bso0 -bsp0
 
-    for f in bootaa64.efi BCD boot.sdi boot.wim; do
+    for f in bootaa64.efi bcd boot.sdi boot.wim; do
         if [[ ! -f "$work/$f" ]]; then
             echo "    ERROR: $f not found in ISO" >&2
             rm -rf "$work"
@@ -138,7 +138,7 @@ build_boot_esp() {
     done
 
     echo "    Rewriting BCD for partition boot..."
-    cp "$work/BCD" "$work/bcd-modified"
+    cp "$work/bcd" "$work/bcd-modified"
 
     # ESP partition GUID — must match the sgdisk -u flag below
     local esp_guid_le="f5,f5,f5,f5,6a,6a,7b,7b,8c,8c,9d,9d,9d,9d,9d,9d"
