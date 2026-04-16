@@ -152,6 +152,8 @@ boot target has run.
 | 14 | Full-RFB VNC key-spam against cdboot (71 presses / 21 s) | cdboot ignores VNC input even with correct handshake |
 | 15 | `FS1:\efi\boot\bootaa64.efi` from Shell (FS1 as current device) | bootmgfw silently exits — BCD CD-ramdisk semantics don't match FS1's VenMedia device path |
 | 16 | Fresh GPT+FAT32 ESP on SCSI disk with unmodified ISO BCD + bootaa64.efi + boot.wim + boot.sdi, no ISO attached | Firmware auto-boots the ESP, bootmgfw exits silently → falls through to Shell (same as #10). Manually re-invoking from Shell produces a hang (60 s+ with no screen update) rather than silent exit — bootmgfw appears to spin waiting on a device reference in BCD that doesn't resolve on this non-CD media. |
+| 17 | ISO on USB + ESP disk on SCSI + fresh NVRAM, repeated cold-boot reproduction of the "one-time Setup success" | 1/3 cold boots reached Setup (r1). r2, r3 hung at "BdsDxe: starting Boot0002 HARDDISK" — ESP bootmgfw spun forever. Confirms one-time success was non-reproducible. |
+| 18 | ISO-only + blank SCSI + fresh NVRAM, drive through Boot Manager menu with full-RFB persistent Space-key spam against cdboot prompt | Reaches the Shell deterministically at t≈12 s. From Shell: `exit` → menu → Down Down Enter → Boot Manager → Enter on USB HARDDRIVE → 22 s of Space spam. ~40–50% single-attempt hit rate. 3–5× retry wrapper succeeds in practice. See "Task #9 Outcome" below. |
 
 ## Promising Unexplored Paths
 
@@ -230,6 +232,90 @@ This path avoids the cdboot-input-injection problem entirely. The remaining
 work is finding a Shell command sequence that successfully launches Windows
 Setup despite the CD-ROM filesystem access limitation.
 
+## Task #9 Outcome — Boot Manager + Keyspam Path (2026-04-15 late)
+
+**Verdict**: Windows Setup is reachable via a repeatable but flaky sequence
+through the UEFI Boot Manager Menu. Single-attempt success rate is ~40–50%
+across 14 trials. A 3–5× retry wrapper achieves reliable eventual success.
+
+### Winning sequence
+
+```
+1. Launch QEMU (ISO on USB, blank build disk on SCSI, usb-kbd, NO bootindex,
+   NO QMP, NO extra USB devices) with fresh NVRAM:
+      rm -f build.vars && truncate -s 64M build.vars
+2. Wait ~12 s — cdboot times out on Boot0001 (USB HARDDRIVE), firmware
+   falls through build disk (blank) → embedded UEFI Shell.
+3. From Shell prompt, type "exit\n" → TianoCore front-page menu appears.
+4. Arrow: Down Down Enter → Boot Manager Menu (USB HARDDRIVE pre-highlighted).
+5. Press Enter → cdboot.efi starts, prints "Press any key to boot from CD
+   or DVD......" with ~15 s countdown.
+6. Immediately spam Space keys via a single persistent RFB connection
+   (~22 s at 8/s, 60 ms key-hold). When cdboot's SimpleTextInput catches
+   a press it chain-loads bootmgfw which loads boot.wim which launches
+   Windows Setup language-selection UI.
+7. If the screenshot at step 6 + 10 s shows "Press any key..." with only
+   2–3 dots (cdboot-prompt frozen) or the Boot Manager Menu (cdboot timed
+   out and returned), kill QEMU and retry from step 1 up to N times.
+```
+
+### Per-attempt failure modes (observed)
+
+- **"cdboot times out"** — 75 space keys never landed on SimpleTextInput;
+  cdboot prints its full "......" (6 dots) then BdsDxe marks Boot0001
+  failed and returns to Boot Manager.
+- **"cdboot dismissed but bootmgfw hangs"** — one space key landed, cdboot
+  chain-loads bootmgfw, but framebuffer is frozen at the cdboot prompt
+  with 2–3 dots, no further progress. bootmgfw appears to be blocked on
+  something internally (possibly the same CD-ramdisk BCD-device race as
+  the hang from §4, but before the ESP fall-through since there is no ESP
+  in this config).
+- **"success"** — cdboot key-press caught, bootmgfw loads in <5 s, boot.wim
+  → WinPE → Setup language UI renders at ~t=30 s after qemu start.
+
+### Tools for this approach
+
+- `drive-setup.sh` — single-attempt driver (steps 1–6 above).
+- `drive-setup-retry.sh` — retry wrapper, default `MAX_ATTEMPTS=5`.
+  Detects success by mean-gray heuristic on `s4-setup.png` (Setup UI's
+  yellow background lifts mean intensity well above text-mode screens).
+- `vnc_spam_keys.py` — single-connection key spammer (rate, duration,
+  hold-ms configurable). Required because re-handshaking in a loop
+  races with cdboot's USB xHCI state.
+- `vnc_send_keys.py` — named-key sender for navigation (Down, Enter, Esc).
+
+### Unresolved: single-attempt determinism
+
+The keyspam arrives at QEMU's VNC server reliably (traced via per-key
+stderr in `vnc_spam_keys.py`), but cdboot's SimpleTextInput polling
+against the firmware xHCI driver has a ~50% hit rate. Attempts to
+improve:
+
+| Variant | Hold-ms | Rate | Pre-delay | Outcome |
+|---------|---------|------|-----------|---------|
+| 22 s, 8/s, 60 ms hold | 60 | 8/s | 0 s | ~50% success (4/8) |
+| 25 s, 4/s, 350 ms hold | 350 | 4/s | 0 s | Failed (1/1 tested) |
+| 15 s, 5/s, 200 ms hold, 4 s pre-delay | 200 | 5/s | 4 s | Failed (1/1) |
+
+No tuning knob reached >70% single-attempt reliability in this session.
+Root cause is likely a race between firmware USB-driver polling and
+cdboot's SimpleTextInput ReadKeyStroke — not something tunable from the
+host side.
+
+### Next steps that were NOT tried in Task #9
+
+1. **Use QMP `input-send-event` alongside VNC keyspam.** Prior sessions
+   flagged QMP as 2/8 reliable alone; combining both input channels might
+   push the hit rate higher.
+2. **Extract a minimal `cdboot_noprompt.efi`** and hot-swap it inside the
+   El Torito image without xorriso GPT format issues (approach #3 in the
+   table). Requires building a custom efisys.bin and rewriting ISO in
+   place, which has known pitfalls.
+3. **Offline modify the ISO's BCD via hivex to flip `custom:46000001`**
+   from CD-ramdisk class to hard-disk class, then use the direct-ESP-boot
+   path (approach #10) deterministically. This is the "Promising
+   Unexplored Path C" from above.
+
 ## Debug Tooling in This Directory
 
 - **`launch-minimal-debug.sh`** — starts the minimal QEMU config that
@@ -239,6 +325,17 @@ Setup despite the CD-ROM filesystem access limitation.
   handling for uppercase/symbols) and `--screenshot PATH.ppm`. Does the
   complete handshake-plus-drain sequence required for key events to
   actually reach the guest.
+- **`vnc_send_keys.py`** — named-key sender (Down, Up, Enter, Esc, F-keys).
+  Does its own handshake per invocation; good for one-shot navigation,
+  not for sustained spam.
+- **`vnc_spam_keys.py`** — single-connection persistent spammer. Hold one
+  RFB session open and send a key repeatedly at a configurable rate for
+  a configurable duration. Required for racing cdboot's "any key" prompt.
+- **`drive-setup.sh`** — end-to-end single-attempt driver: wipes NVRAM,
+  launches QEMU, navigates Shell→menu→BootMgr, spams space, screenshots
+  final state. ~40–50% single-attempt hit rate.
+- **`drive-setup-retry.sh`** — wraps `drive-setup.sh` with success
+  detection and retries up to N (default 5) attempts.
 
 Typical debug loop:
 ```bash
