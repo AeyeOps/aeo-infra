@@ -13,6 +13,7 @@ mesh/dist/
 mesh/build/
 mesh/*.spec
 *.egg-info/
+.tmp/
 
 # IDE/Editor
 .idea/
