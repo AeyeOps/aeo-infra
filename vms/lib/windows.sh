@@ -9,8 +9,10 @@ BASE_IMAGE_DIR="${BASE_IMAGE_DIR:-${STORAGE_DIR}/base-images}"
 BASE_WINDOWS_DISK="${BASE_IMAGE_DIR}/windows-test.qcow2"
 BASE_WINDOWS_VARS="${BASE_IMAGE_DIR}/windows-test.vars"
 BASE_WINDOWS_ROM="${BASE_IMAGE_DIR}/windows-test.rom"
-# Answer file lives in the repo, not the storage directory
-AUTOUNATTEND_XML="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-images/autounattend.xml"
+# Answer file template lives in the repo; builds render a resolved copy with
+# the current host SSH public key injected for BatchMode verification.
+AUTOUNATTEND_TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-images/autounattend.xml"
+AUTOUNATTEND_XML="${AUTOUNATTEND_XML:-${STORAGE_DIR}/base-build-autounattend.xml}"
 OVERLAY_DIR="${OVERLAY_DIR:-/tmp}"
 
 # Default Windows VM settings
@@ -18,6 +20,62 @@ WIN_RAM="${WIN_RAM:-6G}"
 WIN_CPUS="${WIN_CPUS:-4}"
 WIN_USER="${WIN_USER:-testuser}"
 WIN_SMBIOS_SERIAL="76XX5G4"
+WIN_QEMU_CPUSET="${WIN_QEMU_CPUSET:-}"
+
+_WINDOWS_QEMU_CPUSET_CACHE=""
+_WINDOWS_QEMU_CPUSET_REASON=""
+_WINDOWS_QEMU_CPUSET_RESOLVED=0
+
+_windows_find_ssh_public_key() {
+    local key_user="${SUDO_USER:-${USER:-$WIN_USER}}"
+    local ssh_key_file=""
+    local key_type
+
+    for key_type in id_ed25519 id_rsa; do
+        ssh_key_file="/home/${key_user}/.ssh/${key_type}.pub"
+        if [[ -f "$ssh_key_file" ]]; then
+            cat "$ssh_key_file"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+prepare_windows_autounattend() {
+    local template="${AUTOUNATTEND_TEMPLATE}"
+    local output="${AUTOUNATTEND_XML}"
+
+    if [[ ! -f "$template" ]]; then
+        echo "    ERROR: Autounattend template not found: $template" >&2
+        return 1
+    fi
+
+    local ssh_key=""
+    if ! ssh_key=$(_windows_find_ssh_public_key); then
+        echo "    WARNING: No SSH public key found for Windows BatchMode verification." >&2
+        ssh_key=""
+    fi
+
+    mkdir -p "$(dirname "$output")"
+    python3 - "$template" "$output" "$ssh_key" <<'PY'
+from pathlib import Path
+import sys
+from xml.sax.saxutils import escape
+
+template_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+ssh_key = sys.argv[3]
+
+text = template_path.read_text(encoding="utf-8")
+ps_escaped = ssh_key.replace("'", "''")
+xml_escaped = escape(ps_escaped, {'"': '&quot;'})
+text = text.replace("__HOST_SSH_PUBKEY__", xml_escaped)
+output_path.write_text(text, encoding="utf-8")
+PY
+
+    return 0
+}
 
 # ─── Base Image ───────────────────────────────────────────────────────
 
@@ -169,19 +227,18 @@ build_boot_esp() {
         echo "    WARNING: Skipping VirtIO driver injection (wimtools or virtio ISO missing)"
     fi
 
-    # Extract the original BCD from the ISO. The original uses device type 5
-    # ("boot device" = the partition bootmgfw was loaded from). When bootmgfw
-    # runs from the ESP, [boot] resolves to the ESP — where boot.wim lives.
-    # Previous experiments with stale NVRAM confounded this; with fresh NVRAM
-    # (rm + truncate) the original BCD should work unmodified.
-    echo "    Extracting original BCD from ISO..."
-    7z e "$iso_path" -o"$work" "efi/microsoft/boot/bcd" -aoa -bso0 -bsp0
-    local bcd_source="$work/bcd"
+    # Use the pre-built BCD that has already been rewritten for partition boot.
+    # The current ISO BCD path hangs after firmware handoff on ARM64 QEMU;
+    # this store references the fixed ESP/disk GUIDs we stamp below.
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-images"
+    local bcd_source="${script_dir}/bcd-esp.bin"
     if [[ ! -f "$bcd_source" ]]; then
-        echo "    ERROR: BCD not found in ISO" >&2
+        echo "    ERROR: Pre-built BCD not found: $bcd_source" >&2
         rm -rf "$work"
         return 1
     fi
+    echo "    Using pre-built BCD for partition boot..."
 
     echo "    Building 2G ESP disk..."
     rm -f "$esp_path"
@@ -274,8 +331,110 @@ windows_overlay_create() {
 # Args: name
 _windows_mac_for_name() {
     local name="$1"
-    printf '02:%02x:%02x:%02x:%02x:%02x' \
-        $(echo -n "winvm-${name}" | md5sum | sed 's/\(..\)/0x\1 /g' | head -c 30)
+    local hex
+    hex=$(printf '%s' "winvm-${name}" | md5sum | awk '{print $1}')
+    printf '02:%s:%s:%s:%s:%s' \
+        "${hex:0:2}" "${hex:2:2}" "${hex:4:2}" "${hex:6:2}" "${hex:8:2}"
+}
+
+windows_qemu_cpuset() {
+    if (( _WINDOWS_QEMU_CPUSET_RESOLVED == 1 )); then
+        printf '%s\n' "$_WINDOWS_QEMU_CPUSET_CACHE"
+        return 0
+    fi
+
+    _WINDOWS_QEMU_CPUSET_RESOLVED=1
+    _WINDOWS_QEMU_CPUSET_CACHE=""
+    _WINDOWS_QEMU_CPUSET_REASON=""
+
+    if [[ -n "$WIN_QEMU_CPUSET" ]]; then
+        _WINDOWS_QEMU_CPUSET_CACHE="$WIN_QEMU_CPUSET"
+        _WINDOWS_QEMU_CPUSET_REASON="user override"
+        printf '%s\n' "$_WINDOWS_QEMU_CPUSET_CACHE"
+        return 0
+    fi
+
+    if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "aarch64" ]]; then
+        return 0
+    fi
+
+    local cpu_root="/sys/devices/system/cpu"
+    [[ -d "$cpu_root" ]] || return 0
+
+    local highest_cap=-1
+    local highest_midr=""
+    local midr_count=0
+    local prev_midr=""
+    local cpu_dir cpu cpu_online midr cap
+    local -a cpus_same_midr=()
+
+    for cpu_dir in "$cpu_root"/cpu[0-9]*; do
+        [[ -d "$cpu_dir" ]] || continue
+        cpu_online=1
+        if [[ -f "$cpu_dir/online" ]]; then
+            cpu_online=$(cat "$cpu_dir/online" 2>/dev/null || echo 1)
+        fi
+        [[ "$cpu_online" == "1" ]] || continue
+        [[ -r "$cpu_dir/regs/identification/midr_el1" ]] || continue
+
+        midr=$(cat "$cpu_dir/regs/identification/midr_el1" 2>/dev/null || true)
+        [[ -n "$midr" ]] || continue
+        cap=$(cat "$cpu_dir/cpu_capacity" 2>/dev/null || echo 0)
+        cpu=${cpu_dir##*cpu}
+
+        if [[ -z "$prev_midr" ]]; then
+            prev_midr="$midr"
+            midr_count=1
+        elif [[ "$midr" != "$prev_midr" ]]; then
+            midr_count=2
+        fi
+
+        if (( cap > highest_cap )); then
+            highest_cap=$cap
+            highest_midr="$midr"
+        fi
+    done
+
+    if (( midr_count < 2 )) || [[ -z "$highest_midr" ]]; then
+        return 0
+    fi
+
+    for cpu_dir in "$cpu_root"/cpu[0-9]*; do
+        [[ -d "$cpu_dir" ]] || continue
+        cpu_online=1
+        if [[ -f "$cpu_dir/online" ]]; then
+            cpu_online=$(cat "$cpu_dir/online" 2>/dev/null || echo 1)
+        fi
+        [[ "$cpu_online" == "1" ]] || continue
+        [[ -r "$cpu_dir/regs/identification/midr_el1" ]] || continue
+        midr=$(cat "$cpu_dir/regs/identification/midr_el1" 2>/dev/null || true)
+        [[ "$midr" == "$highest_midr" ]] || continue
+        cpu=${cpu_dir##*cpu}
+        cpus_same_midr+=("$cpu")
+    done
+
+    if (( ${#cpus_same_midr[@]} < WIN_CPUS )); then
+        return 0
+    fi
+
+    _WINDOWS_QEMU_CPUSET_CACHE=$(IFS=,; echo "${cpus_same_midr[*]}")
+    _WINDOWS_QEMU_CPUSET_REASON="auto homogeneous MIDR ${highest_midr}"
+    printf '%s\n' "$_WINDOWS_QEMU_CPUSET_CACHE"
+}
+
+windows_qemu_cpuset_reason() {
+    windows_qemu_cpuset >/dev/null
+    printf '%s\n' "$_WINDOWS_QEMU_CPUSET_REASON"
+}
+
+windows_qemu_aarch64() {
+    local cpuset
+    cpuset=$(windows_qemu_cpuset)
+    if [[ -n "$cpuset" ]] && command -v taskset >/dev/null 2>&1; then
+        taskset -c "$cpuset" qemu-system-aarch64 "$@"
+    else
+        qemu-system-aarch64 "$@"
+    fi
 }
 
 # ─── VM Control ────────────────────────────────────────────────────────
@@ -314,7 +473,7 @@ windows_vm_start() {
 
     echo "  Starting Windows VM 'winvm-${name}'..."
 
-    qemu-system-aarch64 \
+    windows_qemu_aarch64 \
         -nodefaults \
         -cpu host \
         -smp "${WIN_CPUS},sockets=1,dies=1,cores=${WIN_CPUS},threads=1" \
@@ -335,10 +494,8 @@ windows_vm_start() {
         -device usb-tablet \
         -netdev "tap,id=hostnet0,ifname=${tap},script=no,downscript=no" \
         -device "virtio-net-pci,netdev=hostnet0,mac=${mac}" \
-        -object "iothread,id=io0" \
         -drive "file=${overlay_disk},id=data0,format=qcow2,cache=writeback,aio=threads,discard=on,detect-zeroes=on,if=none" \
-        -device "virtio-scsi-pci,id=scsi0,bus=pcie.0,iothread=io0" \
-        -device "scsi-hd,drive=data0,bus=scsi0.0,bootindex=1" \
+        -device "nvme,serial=${name}-disk0,drive=data0,bootindex=1" \
         -drive "file=${BASE_WINDOWS_ROM},if=pflash,unit=0,format=raw,readonly=on" \
         -drive "file=${overlay_vars},if=pflash,unit=1,format=raw" \
         -object "rng-random,id=rng0,filename=/dev/urandom" \
