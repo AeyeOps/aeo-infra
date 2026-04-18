@@ -1,85 +1,103 @@
 # Windows Base Image
 
-A fully configured Windows 11 ARM64 installation used as a read-only base
-for instant copy-on-write overlay VMs.
+A reusable Windows 11 ARM64 base image for QEMU/KVM.
 
-## Current status
+Build it once, then use `winvm.sh` to start disposable overlay VMs quickly
+without reinstalling Windows every time.
 
-**The unattended build does not yet work end-to-end.** The blocking issue
-is getting Windows Setup to boot reliably from the ISO on ARM64 QEMU.
-See [BOOT.md](BOOT.md) for the full technical picture before attempting
-any fix.
+## What This Produces
 
-A flaky-but-retryable path exists (see `drive-setup.sh` /
-`drive-setup-retry.sh`) that reaches the Setup UI ~50% per attempt. The
-root cause of the flakiness has not been investigated at the source level.
+The build creates a shared base image at:
 
-## Building
+- `vms/.images/base-images/windows-test.qcow2`
+
+It also writes:
+
+- `vms/.images/base-images/windows-test.vars`
+- `vms/.images/base-images/windows-test.rom`
+
+The build is only considered complete when `winvm.sh` finishes its built-in
+verification step and confirms that the guest boots and answers SSH.
+
+## What Gets Installed
+
+- Windows 11 Pro ARM64
+- VirtIO storage and network drivers
+- OpenSSH Server
+- `testuser` account
+- Static IP `192.168.50.200/24` with gateway `192.168.50.1`
+- Tailscale
+
+## Build It
+
+From `vms/`:
 
 ```bash
 sudo ./winvm.sh image build
 ```
 
-Phase 1 boots QEMU with the Windows ISO, VirtIO drivers, and a build
-disk seeded with `autounattend.xml`. WinPE extracts install.wim to disk
-and reboots. Phase 2 boots from disk (no ISO) through specialize, OOBE,
-and FirstLogonCommands, then shuts down. The raw disk is converted to a
-compressed qcow2 base image.
+What that command does at a high level:
 
-### What gets installed
+- creates the Windows install disk and UEFI state
+- runs the unattended Windows install
+- converts the finished disk to a compressed qcow2 base image
+- boots the image again and verifies SSH access before declaring success
 
-- Windows 11 Pro ARM64
-- VirtIO storage (vioscsi) and network (NetKVM) drivers
-- OpenSSH Server (auto-start)
-- `testuser` account (password: `TestPass123!`, admin)
-- Static IP: `192.168.50.200/24`, gateway `192.168.50.1`
-- Tailscale client
+## Use It
 
-### Files produced
+Once the base image exists:
 
-| File | Purpose |
-|------|---------|
-| `vms/.images/base-images/windows-test.qcow2` | Compressed disk (read-only base) |
-| `vms/.images/base-images/windows-test.vars` | UEFI variables snapshot |
-| `vms/.images/base-images/windows-test.rom` | Padded UEFI firmware (64 MB) |
+```bash
+sudo ./winvm.sh start demo
+./winvm.sh ssh demo
+./winvm.sh exec demo "hostname"
+sudo ./winvm.sh destroy demo
+```
 
-### Answer file
+What this means:
 
-Driven by `autounattend.xml` in this directory. Handles hardware-requirement
-bypasses, UEFI/GPT disk partitioning, VirtIO driver injection, OOBE skip,
-local account, and FirstLogonCommands. See `../kb/windows-autounattend.md`
-for the full reference.
+- `start demo` creates a disposable qcow2 overlay backed by the base image
+- `ssh demo` connects to the guest
+- `destroy demo` removes only the overlay, not the shared base image
 
-## How overlays work
+## Mesh Versus General Use
 
-`winvm.sh start <name>` creates a qcow2 overlay backed by the base disk
-(instant, ~200 KB initially), copies UEFI vars, and boots. All writes go
-to the overlay. `winvm.sh destroy <name>` deletes only the overlay.
+This image is not limited to Mesh workflows.
+
+Mesh and Tailscale are useful defaults in this repo, but the resulting
+`windows-test.qcow2` is a general-purpose Windows 11 ARM64 QEMU base image
+that can be used anywhere the rest of your QEMU workflow expects a bootable
+Windows guest.
+
+## Answer File
+
+The unattended install is driven by `autounattend.xml` in this directory.
+That file handles the Windows install flow, local account setup, and the
+first-boot provisioning steps. See [`../kb/windows-autounattend.md`](../kb/windows-autounattend.md)
+for more detail.
 
 ## Requirements
 
 - Windows 11 ARM64 ISO at `vms/.images/win11arm64.iso`
 - VirtIO drivers ISO at `vms/.images/virtio-win.iso`
-- QEMU with KVM (aarch64), UEFI firmware (`/usr/share/qemu-efi-aarch64/QEMU_EFI.fd`)
-- `sgdisk`, `mkfs.fat`, `mtools` for build-disk seeding
-- `7z` for ISO extraction (if doing BCD analysis)
+- QEMU with KVM and ARM64 UEFI firmware
+- Helper tools used by the build scripts, such as partitioning and FAT-image tooling
 
 ## Troubleshooting
 
-- If build stalls, check VNC `:9` or `/tmp/winbuild-latest.ppm`
-- If SSH verification fails, boot a VM and check `C:\Windows\Temp\firstlogon.log`
-- Build timeout is 3h soft cap (warns but does not kill)
-- **NVRAM must be wiped correctly**: `rm -f build.vars && truncate -s 64M build.vars`.
-  Plain `truncate` on an already-sized file is a no-op. Stale NVRAM poisons boot.
+- If the build stalls, check the active VNC console and the latest screenshot artifacts under `vms/.images/`
+- If SSH verification fails, inspect the guest after boot and review `C:\Windows\Temp\firstlogon.log`
+- `winvm.sh image build` is the source of truth for readiness; the image is not considered done until its verification step passes
 
-## Tools in this directory
+## Tools In This Directory
 
 | File | Purpose |
 |------|---------|
-| `vnc_full.py` | Full RFB 3.8 client: `--type TEXT` and `--screenshot PATH.ppm` |
-| `vnc_send_keys.py` | Named-key sender (Down, Enter, Esc, F-keys) |
-| `vnc_spam_keys.py` | Persistent-connection key spammer (rate/duration configurable) |
-| `launch-minimal-debug.sh` | Minimal QEMU that drops to UEFI Shell (VNC :2) |
-| `drive-setup.sh` | Single-attempt Boot Manager + keyspam sequence (~50% hit rate) |
-| `drive-setup-retry.sh` | Retry wrapper for drive-setup.sh (default 5 attempts) |
-| `autounattend.xml` | Windows unattended answer file |
+| `vnc_full.py` | Full RFB 3.8 client for screenshots and typing |
+| `vnc_send_keys.py` | Named-key sender and text input helper |
+| `vnc_spam_keys.py` | Persistent-connection key spammer |
+| `vnc_click.py` | Fixed-coordinate VNC click helper |
+| `launch-minimal-debug.sh` | Minimal QEMU launch for firmware-level debugging |
+| `drive-setup.sh` | Low-level Windows boot/setup debug helper |
+| `drive-setup-retry.sh` | Retry wrapper for setup debugging |
+| `autounattend.xml` | Windows unattended answer file template |

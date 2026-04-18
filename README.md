@@ -1,125 +1,103 @@
 # aeo-infra
 
-**v0.2.0** · Infrastructure tools for multi-machine development environments.
+**v0.2.0** · Infrastructure tooling for reusable VMs and multi-machine development.
 
-## Components
+## What This Repo Is
 
-| Directory | Purpose | Technology |
-|-----------|---------|------------|
-| [`mesh/`](mesh/) | Mesh networking between machines | Python CLI (Headscale + Syncthing) |
-| [`vms/`](vms/) | QEMU/KVM virtual machine management | Bash scripts |
+This repo gives you two practical building blocks:
+
+| Directory | What it does | Who it is for |
+|-----------|--------------|----------------|
+| [`vms/`](vms/) | Builds and runs QEMU/KVM virtual machines | Anyone who wants disposable local VMs, especially a reusable Windows 11 ARM64 base image |
+| [`mesh/`](mesh/) | Sets up a self-hosted mesh network between machines | Anyone who wants machines to find each other and sync over a private network |
+
+The most important user-facing artifact in this repo is the Windows base image built by `vms/winvm.sh`. That image is not limited to Mesh. It is a general-purpose Windows 11 ARM64 QEMU image that already has SSH and Tailscale installed, so it can be used anywhere that workflow is useful.
 
 > **Note:** The vLLM deployment project has moved to its own repo: [steveant/aeo-vllm-gb10](https://github.com/steveant/aeo-vllm-gb10)
 
-## Configuration
+## Why It Is Valuable
 
-Copy `.env.example` to `.env` and customize for your environment:
+- You can build Windows once and reuse it instead of reinstalling Windows for every VM.
+- You get a bootable `windows-test.qcow2` base image that the scripts verify before declaring ready.
+- You can create disposable Windows VMs quickly from that base image using copy-on-write overlays.
+- You can start from a guest that already has SSH enabled and Tailscale installed.
+
+## Windows Base Image Quick Start
+
+If your goal is a reusable Windows 11 ARM64 image for QEMU, this is the path:
 
 ```bash
-cp .env.example .env
-# Edit .env with your hostnames, IPs, and username
+cd vms
+sudo ./winvm.sh image build
 ```
 
-## Quick Start
+What that build does:
 
-### Mesh Networking
+- creates `vms/.images/base-images/windows-test.qcow2`
+- verifies that the guest boots and answers SSH at `192.168.50.200` as `testuser`
+- leaves Tailscale installed in the image
 
-Self-hosted mesh network using Headscale (Tailscale control server) and Syncthing (file sync).
+Once the base image exists, use it to start disposable Windows VMs:
+
+```bash
+cd vms
+sudo ./winvm.sh start demo
+./winvm.sh ssh demo
+./winvm.sh exec demo "hostname"
+sudo ./winvm.sh destroy demo
+```
+
+What those commands mean:
+
+- `start demo` creates a temporary overlay on top of the shared base image and boots it
+- `ssh demo` connects to the running guest
+- `exec demo ...` runs a command inside the guest
+- `destroy demo` removes the overlay and leaves the shared base image untouched
+
+See [`vms/README.md`](vms/README.md) for the VM command set and [`vms/base-images/README.md`](vms/base-images/README.md) for the Windows image details.
+
+## Mesh Quick Start
+
+If your goal is machine-to-machine networking and sync, use `mesh/`:
 
 ```bash
 cd mesh
 uv sync
 uv run mesh --help
 
-# Server setup (on your coordination server)
+# Server setup
 uv run mesh server setup
 
-# Client setup (other machines)
+# Client setup
 uv run mesh client setup --server http://<server>:8080 --key <KEY>
 
-# Status check
+# Status
 uv run mesh status
 ```
 
-See [`mesh/README.md`](mesh/README.md) for full documentation.
+See [`mesh/README.md`](mesh/README.md) for the full mesh workflow.
 
-### Virtual Machine Management
+## Configuration
 
-ARM64 KVM virtual machines with shared networking.
+Copy `.env.example` to `.env` and customize it for your environment:
 
 ```bash
-cd vms
-
-# Auto-detect and manage VM
-./vm.sh ubu1              # Create/start VM named ubu1
-./vm.sh ubu1 status       # Show state
-./vm.sh ubu1 stop         # Graceful shutdown
-./vm.sh list              # List all VMs
+cp .env.example .env
+# Edit .env with your hostnames, IPs, and username
 ```
-
-See [`vms/README.md`](vms/README.md) for full documentation.
-
-## Architecture Overview
-
-### Mesh Network
-
-```
-Server - Headscale Coordination Server
-├── headscale serve (port 8080)
-├── Tailscale client (localhost:8080)
-└── Syncthing (port 8384/22000)
-              ↓ WireGuard mesh (encrypted)
-Clients - Tailscale Clients
-├── Linux/WSL Tailscale + Syncthing (8385/22001)
-└── Windows Tailscale + Syncthing (8386/22002)
-```
-
-### VM Network
-
-```
-┌─────────────────────────────────────────────────────┐
-│  Host (192.168.50.1)                                │
-│  ┌─────────────┐                                    │
-│  │   br-vm     │◄─── NAT to eth0 ───► Internet     │
-│  └──────┬──────┘                                    │
-│    ┌────┴────┐                                      │
-│ ┌──┴──┐   ┌──┴──┐                                  │
-│ │tap0 │   │tap1 │                                  │
-│ └──┬──┘   └──┬──┘                                  │
-└────┼─────────┼──────────────────────────────────────┘
-┌────┴────┐ ┌──┴─────┐
-│  VM 1   │ │  VM 2  │
-│ .50.10  │ │ .50.11 │
-└─────────┘ └────────┘
-```
-
-## Network Reference
-
-### Mesh Network Ports
-
-| Role | SSH | Syncthing GUI | Syncthing Sync | Headscale |
-|------|-----|---------------|----------------|-----------|
-| Server | 22 | 8384 | 22000 | 8080 |
-| WSL2 | 2222 | 8385 | 22001 | - |
-| Windows | 22 | 8386 | 22002 | - |
-
-### VM Access
-
-| VM | VNC Display | VNC Port | WebSocket | QEMU Monitor |
-|----|-------------|----------|-----------|--------------|
-| First | :0 | 5900 | 5700 | 7100 |
-| Second | :1 | 5901 | 5701 | 7101 |
 
 ## Requirements
 
-### Mesh Tools
-- Python 3.13+
-- uv (package manager)
+### For `mesh/`
 
-### VM Scripts
+- Python 3.13+
+- `uv`
+
+### For `vms/`
+
 - QEMU/KVM
-- ARM64 or x86_64 host
 - UEFI firmware
+- Host support suitable for the VM workflow you want to run
 
 ## License
 
