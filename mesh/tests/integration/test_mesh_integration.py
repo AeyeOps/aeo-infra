@@ -199,7 +199,7 @@ class TestCrossPlatformMesh:
 
     def test_windows_sees_linux_peers(self, winvm_exec):
         result = winvm_exec(
-            '& "C:\\Program Files\\Tailscale\\tailscale.exe" status --json'
+            '"C:\\Program Files\\Tailscale\\tailscale.exe" status --json'
         )
         assert result.returncode == 0, f"tailscale status failed: {result.stderr}"
         status = json.loads(result.stdout)
@@ -208,7 +208,7 @@ class TestCrossPlatformMesh:
 
     def test_windows_tailscale_running(self, winvm_exec):
         result = winvm_exec(
-            '& "C:\\Program Files\\Tailscale\\tailscale.exe" status --json'
+            '"C:\\Program Files\\Tailscale\\tailscale.exe" status --json'
         )
         assert result.returncode == 0
         status = json.loads(result.stdout)
@@ -216,7 +216,7 @@ class TestCrossPlatformMesh:
 
     def test_windows_has_tailscale_ip(self, winvm_exec):
         result = winvm_exec(
-            '& "C:\\Program Files\\Tailscale\\tailscale.exe" ip -4'
+            '"C:\\Program Files\\Tailscale\\tailscale.exe" ip -4'
         )
         assert result.returncode == 0
         ip = result.stdout.strip()

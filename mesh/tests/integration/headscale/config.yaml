@@ -1,5 +1,5 @@
 ---
-server_url: http://172.30.0.10:8080
+server_url: http://192.168.50.10:8080
 
 listen_addr: 0.0.0.0:8080
 metrics_listen_addr: 0.0.0.0:9090

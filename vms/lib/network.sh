@@ -111,6 +111,7 @@ ensure_dnsmasq_on_bridge() {
 
 # Look up the current DHCP lease for a MAC address. Prints IP on stdout.
 # Args: mac, [bridge=br-vm], [timeout_seconds=60]
+# The lookup always checks at least once, so timeout=0 means "one shot".
 dhcp_lease_for_mac() {
     local mac="$1"
     local bridge="${2:-$BRIDGE_NAME}"
@@ -121,7 +122,7 @@ dhcp_lease_for_mac() {
     # Normalize MAC to lower case; dnsmasq writes lower-case hex.
     local mac_lc="${mac,,}"
 
-    while (( elapsed < timeout )); do
+    while :; do
         if [[ -f "$leasefile" ]]; then
             local ip
             ip=$(awk -v mac="$mac_lc" 'tolower($2) == mac {print $3; exit}' "$leasefile")
@@ -130,10 +131,12 @@ dhcp_lease_for_mac() {
                 return 0
             fi
         fi
+        if (( elapsed >= timeout )); then
+            return 1
+        fi
         sleep 1
         elapsed=$((elapsed + 1))
     done
-    return 1
 }
 
 # Configure forward rules for bridge

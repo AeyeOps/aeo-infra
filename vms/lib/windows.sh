@@ -337,6 +337,36 @@ _windows_mac_for_name() {
         "${hex:0:2}" "${hex:2:2}" "${hex:4:2}" "${hex:6:2}" "${hex:8:2}"
 }
 
+# Generate deterministic TAP interface name from instance name.
+# Linux caps interface names at 15 chars; "tap-" + 8 hex chars = 12.
+# Args: name
+_windows_tap_for_name() {
+    local name="$1"
+    local hex
+    hex=$(printf '%s' "winvm-${name}" | md5sum | awk '{print $1}')
+    printf 'tap-%s' "${hex:0:8}"
+}
+
+# Generate a deterministic non-colliding offset (0-63) from the name.
+# Used to pick per-VM VNC display, monitor port, etc.
+_windows_offset_for_name() {
+    local name="$1"
+    local hex
+    hex=$(printf '%s' "winvm-${name}" | md5sum | awk '{print $1}')
+    printf '%d\n' "$(( 0x${hex:0:2} % 64 ))"
+}
+
+# VNC display number (20..83) — avoids clash with common :0/:1/:2 desktop VNCs
+# and the image-build's reserved slots :8 and :10.
+_windows_vnc_for_name() {
+    printf ':%d\n' "$(( 20 + $(_windows_offset_for_name "$1") ))"
+}
+
+# QEMU monitor telnet port (7300..7363) — keeps out of the build's 7100/7198/7200.
+_windows_monitor_for_name() {
+    printf '%d\n' "$(( 7300 + $(_windows_offset_for_name "$1") ))"
+}
+
 windows_qemu_cpuset() {
     if (( _WINDOWS_QEMU_CPUSET_RESOLVED == 1 )); then
         printf '%s\n' "$_WINDOWS_QEMU_CPUSET_CACHE"
@@ -444,9 +474,9 @@ windows_qemu_aarch64() {
 windows_vm_start() {
     local name="$1"
     local ip="$2"
-    local tap="${3:-tap-win-${name}}"
+    local tap="${3:-$(_windows_tap_for_name "$name")}"
     local vnc_display="${4:-:8}"
-    local monitor_port="${5:-7198}"
+    local monitor_port="${5:-$(_windows_monitor_for_name "$1")}"
 
     local overlay_disk="${OVERLAY_DIR}/winvm-${name}.qcow2"
     local overlay_vars="${OVERLAY_DIR}/winvm-${name}.vars"
@@ -526,6 +556,25 @@ windows_vm_lease() {
     dhcp_lease_for_mac "$mac" "$BRIDGE_NAME" "$timeout"
 }
 
+# Find the SSH private key belonging to SUDO_USER (or the invoking user) so
+# root-invoked ssh commands can authenticate with the key that was installed
+# into the Windows guest at first-boot.
+_windows_ssh_key_args() {
+    local key_user="${SUDO_USER:-${USER:-root}}"
+    local key_home="$HOME"
+    if [[ -n "$SUDO_USER" ]]; then
+        key_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    fi
+    local key_type
+    for key_type in id_ed25519 id_rsa; do
+        if [[ -f "${key_home}/.ssh/${key_type}" ]]; then
+            printf -- '-i\n%s\n-o\nIdentitiesOnly=yes\n' "${key_home}/.ssh/${key_type}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Wait for Windows SSH to become accessible
 # Args: ip, [user], [max_attempts]
 windows_vm_wait_ssh() {
@@ -533,10 +582,14 @@ windows_vm_wait_ssh() {
     local user="${2:-$WIN_USER}"
     local max_attempts="${3:-90}"
 
+    local -a key_args=()
+    mapfile -t key_args < <(_windows_ssh_key_args || true)
+
     echo "  Waiting for SSH at ${user}@${ip} (up to ${max_attempts} attempts)..."
     local attempt=1
     while [[ $attempt -le $max_attempts ]]; do
         if ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+               "${key_args[@]}" \
                "${user}@${ip}" "echo ready" 2>/dev/null | grep -q ready; then
             echo ""
             echo "  SSH connected!"
@@ -557,15 +610,17 @@ windows_vm_exec() {
     local ip="$1"
     local cmd="$2"
     local user="${3:-$WIN_USER}"
+    local -a key_args=()
+    mapfile -t key_args < <(_windows_ssh_key_args || true)
 
-    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${user}@${ip}" "${cmd}"
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${key_args[@]}" "${user}@${ip}" "${cmd}"
 }
 
 # Graceful shutdown of Windows VM
 # Args: name, [monitor_port]
 windows_vm_stop() {
     local name="$1"
-    local monitor_port="${2:-7198}"
+    local monitor_port="${2:-$(_windows_monitor_for_name "$1")}"
     local pid_file="/run/shm/winvm-${name}.pid"
 
     if [[ ! -f "$pid_file" ]]; then
@@ -607,8 +662,8 @@ windows_vm_stop() {
 # Args: name, [tap], [monitor_port]
 windows_vm_destroy() {
     local name="$1"
-    local tap="${2:-tap-win-${name}}"
-    local monitor_port="${3:-7198}"
+    local tap="${2:-$(_windows_tap_for_name "$name")}"
+    local monitor_port="${3:-$(_windows_monitor_for_name "$1")}"
     local pid_file="/run/shm/winvm-${name}.pid"
     local log_file="/run/shm/winvm-${name}.log"
     local overlay_disk="${OVERLAY_DIR}/winvm-${name}.qcow2"

@@ -28,15 +28,37 @@ cleanup() {
     done
     echo "  Stopping Docker containers..."
     docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+    # dnsmasq holds the old br-vm lease file open; kill it so the next run
+    # starts with a fresh bridge owned by Docker.
+    if [[ -f /run/dnsmasq-br-vm.pid ]]; then
+        sudo kill "$(cat /run/dnsmasq-br-vm.pid)" 2>/dev/null || true
+        sudo rm -f /run/dnsmasq-br-vm.pid /run/dnsmasq-br-vm.leases 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
+
+# Pre-flight: if br-vm was left behind (e.g., by `winvm.sh image build`),
+# Docker's bridge driver will silently create a new auto-named bridge
+# instead of honouring `com.docker.network.bridge.name: br-vm`. Tear it
+# down so Docker can create br-vm afresh with the compose config.
+echo "=== Pre-flight cleanup ==="
+if [[ -f /run/dnsmasq-br-vm.pid ]]; then
+    sudo kill "$(cat /run/dnsmasq-br-vm.pid)" 2>/dev/null || true
+    sudo rm -f /run/dnsmasq-br-vm.pid /run/dnsmasq-br-vm.leases 2>/dev/null || true
+fi
+if ip link show br-vm &>/dev/null; then
+    echo "  Removing leftover br-vm..."
+    sudo ip link delete br-vm 2>/dev/null || true
+fi
+docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
 
 # Phase 1: Start Headscale
 echo "=== Starting Headscale on br-vm ==="
 docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d headscale
 echo "=== Waiting for Headscale health ==="
 for i in $(seq 1 30); do
-    if docker exec meshtest-headscale headscale health 2>&1 | grep -qi "ok\|healthy\|pass"; then
+    # headscale v0.27.1 emits no output on success; trust the exit code.
+    if docker exec meshtest-headscale headscale health >/dev/null 2>&1; then
         echo "  Healthy (${i}s)"
         break
     fi
@@ -58,7 +80,7 @@ USER_ID=$(docker exec meshtest-headscale headscale users list -o json | \
 echo "  User ID: $USER_ID"
 
 AUTHKEY=$(docker exec meshtest-headscale headscale preauthkeys create \
-    --user "$USER_ID" --reusable -o json | \
+    --user "$USER_ID" --reusable --expiration 24h -o json | \
     python3 -c "import sys,json; print(json.loads(sys.stdin.read())['key'])")
 echo "  Auth key: ${AUTHKEY:0:12}..."
 
@@ -100,9 +122,15 @@ docker exec meshtest-client-b tailscale up \
 for name in "${WIN_NAMES[@]}"; do
     ip="${WIN_IPS[$name]}"
     echo "=== Joining $name ($ip) ==="
+    # Windows OpenSSH defaults to CMD — use CMD-safe quoting (no PowerShell `&`).
+    # `tailscale up` returns "timeout waiting for Running state" when DERP is
+    # unreachable even though the node is successfully registered. Treat a
+    # non-zero exit as a warning; pytest validates real connectivity.
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+        -o ServerAliveInterval=10 -o ServerAliveCountMax=12 \
         "${WIN_USER}@${ip}" \
-        "& 'C:\\Program Files\\Tailscale\\tailscale.exe' up --login-server=${HEADSCALE_URL} --authkey=${AUTHKEY} --hostname=${name} --accept-routes"
+        "\"C:\\Program Files\\Tailscale\\tailscale.exe\" up --login-server=${HEADSCALE_URL} --authkey=${AUTHKEY} --hostname=${name} --accept-routes --timeout=30s" \
+        || echo "  (tailscale up exited non-zero on $name; will verify via Headscale)"
 done
 
 # Phase 6: Wait for full peer discovery (all 4 nodes visible to client-a)

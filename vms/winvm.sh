@@ -117,7 +117,8 @@ cmd_start() {
     echo ""
 
     # Ensure network (bridge, tap, NAT, dnsmasq DHCP)
-    local tap="tap-win-${name}"
+    local tap
+    tap=$(_windows_tap_for_name "$name")
     local upstream
     upstream=$(detect_upstream_interface)
     ensure_bridge "$BRIDGE_NAME" "$HOST_IP"
@@ -128,8 +129,14 @@ cmd_start() {
     ensure_dnsmasq_on_bridge "$BRIDGE_NAME"
     echo ""
 
+    # Per-VM VNC display and QEMU monitor port so concurrent VMs don't clash
+    local vnc_display
+    vnc_display=$(_windows_vnc_for_name "$name")
+    local monitor_port
+    monitor_port=$(_windows_monitor_for_name "$name")
+
     # Start VM
-    windows_vm_start "$name" "" "$tap"
+    windows_vm_start "$name" "" "$tap" "$vnc_display" "$monitor_port"
     echo ""
 
     # Wait for DHCP lease, then SSH
@@ -147,9 +154,10 @@ cmd_start() {
     echo "======================================================="
     echo "Windows VM 'winvm-${name}' ready"
     echo ""
-    echo "  IP:   ${ip}"
-    echo "  SSH:  ssh ${WIN_USER}@${ip}"
-    echo "  VNC:  localhost:8 (port 5908)"
+    echo "  IP:      ${ip}"
+    echo "  SSH:     ssh ${WIN_USER}@${ip}"
+    echo "  VNC:     localhost${vnc_display}"
+    echo "  Monitor: telnet localhost ${monitor_port}"
     echo ""
 }
 
