@@ -516,6 +516,16 @@ windows_vm_start() {
     fi
 }
 
+# Look up the DHCP lease for a Windows VM by name. Prints IP on stdout.
+# Args: name, [timeout_seconds=120]
+windows_vm_lease() {
+    local name="$1"
+    local timeout="${2:-120}"
+    local mac
+    mac=$(_windows_mac_for_name "$name")
+    dhcp_lease_for_mac "$mac" "$BRIDGE_NAME" "$timeout"
+}
+
 # Wait for Windows SSH to become accessible
 # Args: ip, [user], [max_attempts]
 windows_vm_wait_ssh() {

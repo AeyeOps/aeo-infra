@@ -28,7 +28,6 @@ source "${SCRIPT_DIR}/lib/windows.sh"
 BRIDGE_NAME="br-vm"
 VM_SUBNET="192.168.50"
 HOST_IP="${VM_SUBNET}.1"
-WIN_DEFAULT_IP="${VM_SUBNET}.200"
 
 # ─── Usage ─────────────────────────────────────────────────────────────
 
@@ -37,12 +36,13 @@ show_usage() {
 Usage: ./winvm.sh <command> [args]
 
 Instance commands:
-  start <name> [--ip IP]    Start a new Windows VM (auto-builds base image if needed)
+  start <name>              Start a new Windows VM (auto-builds base image if needed)
   stop <name>               Graceful shutdown
   destroy <name>            Full teardown (stop + delete overlay)
   ssh <name>                Connect via SSH
   exec <name> <cmd>         Run command on VM via SSH
   status <name>             Check VM state
+  ip <name>                 Print the DHCP-assigned IP of a running VM
   list                      List running Windows VMs
 
 Base image commands:
@@ -51,7 +51,6 @@ Base image commands:
   image destroy             Remove base image
 
 Options:
-  --ip IP       Override default IP (default: 192.168.50.200)
   --help, -h    Show this help
 
 Examples:
@@ -76,12 +75,10 @@ require_root() {
 
 cmd_start() {
     local name="$1"
-    local ip="$WIN_DEFAULT_IP"
 
     shift || true
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --ip) ip="$2"; shift 2 ;;
             *) echo "Unknown option: $1"; exit 1 ;;
         esac
     done
@@ -119,7 +116,7 @@ cmd_start() {
     echo "  Overlay: $overlay_disk"
     echo ""
 
-    # Ensure network
+    # Ensure network (bridge, tap, NAT, dnsmasq DHCP)
     local tap="tap-win-${name}"
     local upstream
     upstream=$(detect_upstream_interface)
@@ -128,22 +125,47 @@ cmd_start() {
     ensure_ip_forwarding
     ensure_nat_masquerade "$upstream"
     ensure_forward_rules "$BRIDGE_NAME" "$upstream"
+    ensure_dnsmasq_on_bridge "$BRIDGE_NAME"
     echo ""
 
     # Start VM
-    windows_vm_start "$name" "$ip" "$tap"
+    windows_vm_start "$name" "" "$tap"
     echo ""
 
-    # Wait for SSH
+    # Wait for DHCP lease, then SSH
+    echo "  Waiting for DHCP lease..."
+    local ip
+    ip=$(windows_vm_lease "$name" 180)
+    if [[ -z "$ip" ]]; then
+        echo "  ERROR: no DHCP lease for winvm-${name} within 180s" >&2
+        exit 1
+    fi
+    echo "  Lease: $ip"
     windows_vm_wait_ssh "$ip"
 
     echo ""
     echo "======================================================="
     echo "Windows VM 'winvm-${name}' ready"
     echo ""
+    echo "  IP:   ${ip}"
     echo "  SSH:  ssh ${WIN_USER}@${ip}"
     echo "  VNC:  localhost:8 (port 5908)"
     echo ""
+}
+
+cmd_ip() {
+    local name="$1"
+    if [[ -z "$name" ]]; then
+        echo "Usage: winvm.sh ip <name>" >&2
+        exit 1
+    fi
+    local ip
+    ip=$(windows_vm_lease "$name" 0 2>/dev/null || true)
+    if [[ -z "$ip" ]]; then
+        echo "No DHCP lease for winvm-${name}" >&2
+        exit 1
+    fi
+    printf '%s\n' "$ip"
 }
 
 cmd_stop() {
@@ -170,7 +192,12 @@ cmd_destroy() {
 
 cmd_ssh() {
     local name="$1"
-    local ip="${2:-$WIN_DEFAULT_IP}"
+    local ip
+    ip=$(windows_vm_lease "$name" 5 2>/dev/null || true)
+    if [[ -z "$ip" ]]; then
+        echo "Error: no DHCP lease for winvm-${name}" >&2
+        exit 1
+    fi
 
     exec ssh -o StrictHostKeyChecking=accept-new "${WIN_USER}@${ip}"
 }
@@ -178,14 +205,21 @@ cmd_ssh() {
 cmd_exec() {
     local name="$1"
     shift
-    local ip="$WIN_DEFAULT_IP"
+    local ip
+    ip=$(windows_vm_lease "$name" 5 2>/dev/null || true)
+    if [[ -z "$ip" ]]; then
+        echo "Error: no DHCP lease for winvm-${name}" >&2
+        exit 1
+    fi
 
     windows_vm_exec "$ip" "$*"
 }
 
 cmd_status() {
     local name="$1"
-    local ip="${2:-$WIN_DEFAULT_IP}"
+    local ip
+    ip=$(windows_vm_lease "$name" 0 2>/dev/null || true)
+    ip="${ip:-unknown}"
 
     windows_vm_status "$name" "$ip"
 }
@@ -442,6 +476,7 @@ cmd_image_build() {
     ensure_ip_forwarding
     ensure_nat_masquerade "$upstream"
     ensure_forward_rules "$BRIDGE_NAME" "$upstream"
+    ensure_dnsmasq_on_bridge "$BRIDGE_NAME"
 
     local qemu_cpuset qemu_cpuset_reason
     qemu_cpuset="$(windows_qemu_cpuset)"
@@ -1261,7 +1296,9 @@ PY
     echo ""
     echo "Verifying base image (quick boot + SSH probe)..."
     local verify_ok=0
-    local verify_ip="192.168.50.200"
+    # verify_ip is populated from the DHCP lease after the VM boots;
+    # the base image is now DHCP, so it changes per build and per run.
+    local verify_ip=""
     local verify_user="testuser"
     local verify_name="base-verify"
     local verify_vnc=":10"
@@ -1316,8 +1353,8 @@ PY
         ensure_tap "$build_tap" "$BRIDGE_NAME" 2>/dev/null
 
         # Start VM quietly (using VNC :10 to avoid conflict)
-        if windows_vm_start "$verify_name" "$verify_ip" "$build_tap" "$verify_vnc" "$verify_monitor" >/dev/null 2>&1; then
-            echo "  Waiting for SSH at ${verify_user}@${verify_ip}..."
+        if windows_vm_start "$verify_name" "" "$build_tap" "$verify_vnc" "$verify_monitor" >/dev/null 2>&1; then
+            echo "  Waiting for DHCP lease + SSH as ${verify_user}..."
 
             # The verification overlay can land in the same Windows Boot
             # Manager hang as the installer. Keep the overlay + NVRAM and
@@ -1335,8 +1372,16 @@ PY
                 local verify_restart_requested=0
 
                 while (( verify_elapsed < verify_attempt_timeout )); do
-                    if "${verify_ssh_cmd[@]}" "${verify_user}@${verify_ip}" "echo ready" 2>/dev/null | grep -q ready; then
-                        echo "  SSH verification: SUCCESS"
+                    if [[ -z "$verify_ip" ]]; then
+                        verify_ip=$(windows_vm_lease "$verify_name" 2 2>/dev/null || true)
+                        if [[ -n "$verify_ip" ]]; then
+                            echo "  DHCP lease acquired: ${verify_ip}"
+                        fi
+                    fi
+
+                    if [[ -n "$verify_ip" ]] && \
+                       "${verify_ssh_cmd[@]}" "${verify_user}@${verify_ip}" "echo ready" 2>/dev/null | grep -q ready; then
+                        echo "  SSH verification: SUCCESS (${verify_ip})"
                         verify_ok=1
                         break
                     fi
@@ -1393,11 +1438,13 @@ PY
                     break
                 fi
 
-                if ! windows_vm_start "$verify_name" "$verify_ip" "$build_tap" "$verify_vnc" "$verify_monitor" >/dev/null 2>&1; then
+                if ! windows_vm_start "$verify_name" "" "$build_tap" "$verify_vnc" "$verify_monitor" >/dev/null 2>&1; then
                     echo "  WARNING: Could not restart verification VM"
                     break
                 fi
 
+                # Fresh boot — re-query DHCP lease; IP may have changed.
+                verify_ip=""
                 verify_elapsed=0
                 verify_last_screen_hash=""
                 verify_last_screen_change=0
@@ -1491,6 +1538,10 @@ main() {
         status)
             [[ $# -lt 1 ]] && { echo "Error: name required"; show_usage; exit 1; }
             cmd_status "$@"
+            ;;
+        ip)
+            [[ $# -lt 1 ]] && { echo "Error: name required"; show_usage; exit 1; }
+            cmd_ip "$1"
             ;;
         list)
             cmd_list

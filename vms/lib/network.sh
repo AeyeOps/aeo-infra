@@ -67,6 +67,75 @@ ensure_nat_masquerade() {
     fi
 }
 
+# Ensure a DHCP server is running on the bridge so overlay VMs get dynamic leases.
+# Uses a dedicated dnsmasq instance bound only to the bridge — does not touch
+# the host's main resolver or other interfaces.
+ensure_dnsmasq_on_bridge() {
+    local bridge="${1:-$BRIDGE_NAME}"
+    local subnet="${2:-${VM_SUBNET}.0/24}"
+    local gateway="${3:-$HOST_IP}"
+    local dhcp_start="${4:-${VM_SUBNET}.100}"
+    local dhcp_end="${5:-${VM_SUBNET}.199}"
+    local pidfile="/run/dnsmasq-${bridge}.pid"
+    local leasefile="/run/dnsmasq-${bridge}.leases"
+
+    if [[ -f "$pidfile" ]]; then
+        local pid
+        pid=$(cat "$pidfile" 2>/dev/null || true)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "$pidfile"
+    fi
+
+    if ! command -v dnsmasq >/dev/null 2>&1; then
+        echo "    WARNING: dnsmasq not installed — VMs will not get DHCP leases" >&2
+        return 1
+    fi
+
+    echo "    → Starting dnsmasq DHCP on $bridge (${dhcp_start}-${dhcp_end})..."
+    dnsmasq \
+        --interface="$bridge" \
+        --bind-dynamic \
+        --except-interface=lo \
+        --dhcp-range="${dhcp_start},${dhcp_end},12h" \
+        --dhcp-authoritative \
+        --dhcp-option="3,${gateway}" \
+        --dhcp-option="6,${gateway}" \
+        --dhcp-leasefile="$leasefile" \
+        --pid-file="$pidfile" \
+        --port=53 \
+        --no-hosts \
+        --log-facility=/var/log/dnsmasq-${bridge}.log
+}
+
+# Look up the current DHCP lease for a MAC address. Prints IP on stdout.
+# Args: mac, [bridge=br-vm], [timeout_seconds=60]
+dhcp_lease_for_mac() {
+    local mac="$1"
+    local bridge="${2:-$BRIDGE_NAME}"
+    local timeout="${3:-60}"
+    local leasefile="/run/dnsmasq-${bridge}.leases"
+    local elapsed=0
+
+    # Normalize MAC to lower case; dnsmasq writes lower-case hex.
+    local mac_lc="${mac,,}"
+
+    while (( elapsed < timeout )); do
+        if [[ -f "$leasefile" ]]; then
+            local ip
+            ip=$(awk -v mac="$mac_lc" 'tolower($2) == mac {print $3; exit}' "$leasefile")
+            if [[ -n "$ip" ]]; then
+                printf '%s\n' "$ip"
+                return 0
+            fi
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
 # Configure forward rules for bridge
 ensure_forward_rules() {
     local bridge="${1:-$BRIDGE_NAME}"
@@ -118,10 +187,15 @@ ensure_network_ready() {
         ensure_ip_forwarding
         ensure_nat_masquerade "$upstream"
         ensure_forward_rules "$bridge" "$upstream"
+        ensure_dnsmasq_on_bridge "$bridge"
         echo "  ✓ Network ready"
     else
         echo "  ✓ Network OK"
     fi
+
+    # dnsmasq is idempotent (pidfile-checked); always make sure it is running
+    # so VMs get DHCP leases even when the rest of the network is already set up.
+    ensure_dnsmasq_on_bridge "$bridge"
 }
 
 # Remove TAP interface

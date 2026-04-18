@@ -4,8 +4,6 @@ services:
     container_name: meshtest-headscale
     hostname: headscale
     command: serve
-    ports:
-      - "127.0.0.1:8080:8080"  # Host-accessible for QEMU Windows VMs
     volumes:
       - ./headscale/config.yaml:/etc/headscale/config.yaml:ro
       - ./headscale/derp.yaml:/etc/headscale/derp.yaml:ro
@@ -13,7 +11,7 @@ services:
       - headscale-data:/var/lib/headscale
     networks:
       meshtest:
-        ipv4_address: 172.30.0.10
+        ipv4_address: 192.168.50.10
     healthcheck:
       test: ["CMD", "headscale", "health"]
       interval: 5s
@@ -39,7 +37,7 @@ services:
       - client-a-state:/var/lib/tailscale
     networks:
       meshtest:
-        ipv4_address: 172.30.0.11
+        ipv4_address: 192.168.50.11
     depends_on:
       headscale:
         condition: service_healthy
@@ -62,17 +60,27 @@ services:
       - client-b-state:/var/lib/tailscale
     networks:
       meshtest:
-        ipv4_address: 172.30.0.12
+        ipv4_address: 192.168.50.12
     depends_on:
       headscale:
         condition: service_healthy
 
+# The meshtest network attaches to the existing Linux bridge owned by
+# winvm.sh (br-vm). QEMU Windows VMs attach taps to the same bridge and
+# receive DHCP leases in 192.168.50.100-199 from dnsmasq. Docker owns
+# .10-.12 statically. Masquerade is off — this network is for isolated
+# mesh testing, not outbound traffic.
 networks:
   meshtest:
     driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-vm
+      com.docker.network.bridge.enable_ip_masquerade: "false"
     ipam:
       config:
-        - subnet: 172.30.0.0/24
+        - subnet: 192.168.50.0/24
+          gateway: 192.168.50.1
+          ip_range: 192.168.50.0/28
 
 volumes:
   headscale-data:

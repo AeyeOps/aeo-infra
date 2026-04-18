@@ -224,11 +224,11 @@
           <Description>Start first-logon logging</Description>
         </SynchronousCommand>
 
-        <!-- 1. Set static IP after the network stack comes up -->
+        <!-- 1. Enable DHCP on the first up adapter so every overlay gets its own lease -->
         <SynchronousCommand wcm:action="add">
           <Order>2</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -Command "$l='C:\Windows\Temp\firstlogon.log';$a=$null;1..24|%{if(!$a){$a=Get-NetAdapter|? Status -eq Up|sort ifIndex|select -First 1;if(!$a){sleep 5}}};if(!$a){Add-Content $l 'StaticIP no adapter';exit 0};try{if(!(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA 0|? IPAddress -eq '192.168.50.200')){New-NetIPAddress -InterfaceIndex $a.ifIndex -IPAddress 192.168.50.200 -PrefixLength 24 -DefaultGateway 192.168.50.1 -EA Stop|Out-Null};Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses 8.8.8.8 -EA Stop;Add-Content $l 'StaticIP OK'}catch{Add-Content $l 'StaticIP FAIL'}"</CommandLine>
-          <Description>Set static IP address</Description>
+          <CommandLine>powershell -ExecutionPolicy Bypass -Command "$l='C:\Windows\Temp\firstlogon.log';$a=$null;1..24|%{if(!$a){$a=Get-NetAdapter|? Status -eq Up|sort ifIndex|select -First 1;if(!$a){sleep 5}}};if(!$a){Add-Content $l 'DHCP no adapter';exit 0};try{Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -PrefixOrigin Manual -EA 0|Remove-NetIPAddress -Confirm:$false -EA 0;Get-NetRoute -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA 0|? NextHop -ne '0.0.0.0'|Remove-NetRoute -Confirm:$false -EA 0;Set-NetIPInterface -InterfaceIndex $a.ifIndex -Dhcp Enabled -EA Stop;Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -EA Stop;ipconfig /renew | Out-Null;Add-Content $l 'DHCP OK'}catch{Add-Content $l ('DHCP FAIL ' + $_.Exception.Message)}"</CommandLine>
+          <Description>Enable DHCP on primary adapter</Description>
         </SynchronousCommand>
 
         <!-- 2. Install and enable OpenSSH Server, retrying until the network is ready -->

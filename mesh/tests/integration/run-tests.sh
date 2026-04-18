@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Integration test orchestrator for mesh CLI
-# Spins up a heterogeneous mesh: Headscale + 2 Linux clients (Docker) + 1 Windows client (QEMU)
+# Spins up a heterogeneous mesh on a single shared bridge (br-vm):
+#   - Headscale + 2 Linux clients (Docker) at 192.168.50.10/.11/.12
+#   - 2 Windows clients (QEMU) with dynamic DHCP leases in .100-.199
 # Usage: ./tests/integration/run-tests.sh [pytest args...]
 set -euo pipefail
 
@@ -10,23 +12,27 @@ REPO_DIR="$(cd "$MESH_DIR/.." && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 PROJECT="meshtest"
 
-# Windows VM infrastructure
+# Windows VM infrastructure — two distinct VMs, IPs discovered dynamically
 WINVM_SH="${REPO_DIR}/vms/winvm.sh"
-WINVM_NAME="meshtest-win"
-WINVM_IP="192.168.50.200"
-WINVM_USER="testuser"
+WIN_NAMES=(meshtest-win-a meshtest-win-b)
+WIN_USER="testuser"
+
+# Single Headscale URL on the shared bridge — no host port-forward hairpin
+HEADSCALE_URL="http://192.168.50.10:8080"
 
 cleanup() {
     echo "--- Tearing down ---"
-    echo "  Stopping Windows VM..."
-    sudo "$WINVM_SH" destroy "$WINVM_NAME" 2>/dev/null || true
+    for name in "${WIN_NAMES[@]}"; do
+        echo "  Stopping Windows VM $name..."
+        sudo "$WINVM_SH" destroy "$name" 2>/dev/null || true
+    done
     echo "  Stopping Docker containers..."
     docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
 }
 trap cleanup EXIT
 
 # Phase 1: Start Headscale
-echo "=== Starting Headscale ==="
+echo "=== Starting Headscale on br-vm ==="
 docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d headscale
 echo "=== Waiting for Headscale health ==="
 for i in $(seq 1 30); do
@@ -61,42 +67,55 @@ echo "=== Starting Linux clients ==="
 docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d client-a client-b
 sleep 3
 
-# Phase 4: Start Windows VM (auto-builds base image if needed)
-echo "=== Starting Windows VM ==="
-sudo "$WINVM_SH" start "$WINVM_NAME" --ip "$WINVM_IP"
+# Phase 4: Start two Windows VMs and discover their DHCP IPs
+echo "=== Starting Windows VMs ==="
+declare -A WIN_IPS
+for name in "${WIN_NAMES[@]}"; do
+    echo "  Starting $name..."
+    sudo "$WINVM_SH" start "$name"
+    ip=$(sudo "$WINVM_SH" ip "$name")
+    if [[ -z "$ip" ]]; then
+        echo "FAIL: no DHCP lease for $name"
+        exit 1
+    fi
+    WIN_IPS[$name]="$ip"
+    echo "    $name -> $ip"
+done
 
 # Phase 5: Join all nodes to mesh
 echo "=== Joining client-a ==="
 docker exec meshtest-client-a tailscale up \
-    --login-server=http://172.30.0.10:8080 \
+    --login-server="$HEADSCALE_URL" \
     --authkey="$AUTHKEY" \
     --hostname=client-a \
     --accept-routes
 
 echo "=== Joining client-b ==="
 docker exec meshtest-client-b tailscale up \
-    --login-server=http://172.30.0.10:8080 \
+    --login-server="$HEADSCALE_URL" \
     --authkey="$AUTHKEY" \
     --hostname=client-b \
     --accept-routes
 
-# Headscale is port-forwarded to host:8080, reachable from QEMU bridge at 192.168.50.1:8080
-echo "=== Joining Windows ==="
-ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-    "${WINVM_USER}@${WINVM_IP}" \
-    "& 'C:\\Program Files\\Tailscale\\tailscale.exe' up --login-server=http://192.168.50.1:8080 --authkey=${AUTHKEY} --hostname=windows-test --accept-routes"
+for name in "${WIN_NAMES[@]}"; do
+    ip="${WIN_IPS[$name]}"
+    echo "=== Joining $name ($ip) ==="
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+        "${WIN_USER}@${ip}" \
+        "& 'C:\\Program Files\\Tailscale\\tailscale.exe' up --login-server=${HEADSCALE_URL} --authkey=${AUTHKEY} --hostname=${name} --accept-routes"
+done
 
-# Phase 6: Wait for full peer discovery (all 3 nodes see each other)
+# Phase 6: Wait for full peer discovery (all 4 nodes visible to client-a)
 echo "=== Waiting for peer discovery ==="
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     PEERS=$(docker exec meshtest-client-a tailscale status --json 2>/dev/null | \
         python3 -c "import sys,json; print(len(json.loads(sys.stdin.read()).get('Peer',{})))" 2>/dev/null || echo "0")
-    if [ "$PEERS" -ge 2 ]; then
+    if [ "$PEERS" -ge 3 ]; then
         echo "  All peers visible (${i}s): ${PEERS} peers"
         break
     fi
-    if [ "$i" -eq 30 ]; then
-        echo "WARN: Only ${PEERS} peer(s) visible after 30s (expected 2)"
+    if [ "$i" -eq 60 ]; then
+        echo "WARN: Only ${PEERS} peer(s) visible after 60s (expected 3)"
     fi
     sleep 1
 done
@@ -106,8 +125,10 @@ echo ""
 echo "=== Running integration tests ==="
 cd "$MESH_DIR"
 AUTHKEY="$AUTHKEY" \
-WINVM_IP="$WINVM_IP" \
-WINVM_USER="$WINVM_USER" \
+HEADSCALE_URL="$HEADSCALE_URL" \
+WIN_A_IP="${WIN_IPS[meshtest-win-a]}" \
+WIN_B_IP="${WIN_IPS[meshtest-win-b]}" \
+WIN_USER="$WIN_USER" \
     uv run pytest tests/integration/ -v --tb=short "$@"
 EXIT_CODE=$?
 

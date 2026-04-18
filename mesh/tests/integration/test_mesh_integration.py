@@ -35,12 +35,13 @@ class TestHeadscaleHealth:
         assert "client-a" in hostnames
         assert "client-b" in hostnames
 
-    def test_windows_node_registered(self, headscale_exec):
+    def test_windows_nodes_registered(self, headscale_exec):
         result = headscale_exec(["headscale", "nodes", "list", "-o", "json"])
         assert result.returncode == 0
         nodes = json.loads(result.stdout)
         hostnames = [n.get("givenName", n.get("name", "")).lower() for n in nodes]
-        assert "windows-test" in hostnames, f"Windows node not in Headscale. Nodes: {hostnames}"
+        for name in ("meshtest-win-a", "meshtest-win-b"):
+            assert name in hostnames, f"{name} not in Headscale. Nodes: {hostnames}"
 
 
 class TestClientMesh:
@@ -181,19 +182,20 @@ class TestTemplatePIIScrub:
 class TestCrossPlatformMesh:
     """Verify Windows and Linux nodes can see and reach each other."""
 
-    def test_linux_sees_windows_peer(self, client_a_exec):
+    def test_linux_sees_both_windows_peers(self, client_a_exec):
         result = client_a_exec(["tailscale", "status", "--json"])
         assert result.returncode == 0
         status = json.loads(result.stdout)
         peer_hosts = [p.get("HostName", "").lower() for p in status.get("Peer", {}).values()]
-        assert "windows-test" in peer_hosts, f"Windows not visible from Linux. Peers: {peer_hosts}"
+        for name in ("meshtest-win-a", "meshtest-win-b"):
+            assert name in peer_hosts, f"{name} not visible from Linux. Peers: {peer_hosts}"
 
-    def test_linux_pings_windows(self, client_a_exec):
+    def test_linux_pings_each_windows(self, client_a_exec, winvm):
         result = client_a_exec(
-            ["tailscale", "ping", "-c", "1", "windows-test"],
+            ["tailscale", "ping", "-c", "1", winvm["name"]],
             timeout=30,
         )
-        assert result.returncode == 0, f"Linux→Windows ping failed: {result.stderr}"
+        assert result.returncode == 0, f"Linux→{winvm['name']} ping failed: {result.stderr}"
 
     def test_windows_sees_linux_peers(self, winvm_exec):
         result = winvm_exec(

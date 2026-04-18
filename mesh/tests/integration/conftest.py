@@ -106,21 +106,38 @@ def client_b_status(client_b_exec):
 # --- Windows VM fixtures ---
 
 
+WIN_NAMES = ("meshtest-win-a", "meshtest-win-b")
+
+
 @pytest.fixture(scope="session")
-def winvm_ip():
-    """Windows VM IP address."""
-    return os.environ.get("WINVM_IP", "192.168.50.200")
+def winvm_ips() -> dict[str, str]:
+    """Map of Windows VM name -> DHCP-assigned IP, from run-tests.sh."""
+    ips = {
+        "meshtest-win-a": os.environ.get("WIN_A_IP", ""),
+        "meshtest-win-b": os.environ.get("WIN_B_IP", ""),
+    }
+    missing = [n for n, ip in ips.items() if not ip]
+    if missing:
+        pytest.fail(f"Windows VM IPs not set — run via run-tests.sh (missing: {missing})")
+    return ips
 
 
 @pytest.fixture(scope="session")
 def winvm_user():
     """Windows VM SSH user."""
-    return os.environ.get("WINVM_USER", "testuser")
+    return os.environ.get("WIN_USER", "testuser")
 
 
-@pytest.fixture(scope="session")
-def winvm_exec(winvm_ip, winvm_user):
-    """Helper to exec commands on the Windows VM via SSH."""
+@pytest.fixture(params=WIN_NAMES)
+def winvm(request, winvm_ips, winvm_user):
+    """Parametrized Windows VM record — each Windows-dependent test runs per VM."""
+    name = request.param
+    return {"name": name, "ip": winvm_ips[name], "user": winvm_user}
+
+
+@pytest.fixture
+def winvm_exec(winvm):
+    """Helper to exec commands on the current parametrized Windows VM via SSH."""
     def _exec(cmd: str, **kwargs) -> subprocess.CompletedProcess:
-        return ssh_exec(winvm_ip, cmd, user=winvm_user, **kwargs)
+        return ssh_exec(winvm["ip"], cmd, user=winvm["user"], **kwargs)
     return _exec
