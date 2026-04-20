@@ -1,16 +1,16 @@
 [project]
 name = "mesh"
-version = "0.6.0"
+version = "0.6.1"
 description = "Mesh network setup and privacy hardening tools (Headscale + Syncthing)"
 requires-python = ">=3.13"
 dependencies = [
-    "typer>=0.15",
-    "rich>=13.0",
-    "httpx>=0.28",
-    "pydantic>=2.0",
-    "pydantic-settings>=2.0",
-    "pyyaml>=6.0",
-    "zeroconf>=0.131",
+    "typer>=0.15,<1.0",
+    "rich>=13.0,<15.0",
+    "httpx>=0.28,<1.0",
+    "pydantic>=2.0,<3.0",
+    "pydantic-settings>=2.0,<3.0",
+    "pyyaml>=6.0,<7.0",
+    "zeroconf>=0.131,<1.0",
 ]
 
 [project.scripts]
@@ -28,9 +28,9 @@ python-version = "3.13"
 
 [dependency-groups]
 dev = [
-    "pyinstaller>=6.0",
-    "pytest>=8.0",
-    "ruff>=0.8",
+    "pyinstaller>=6.0,<8.0",
+    "pytest>=8.0,<10.0",
+    "ruff>=0.8,<1.0",
 ]
 
 [tool.ruff]

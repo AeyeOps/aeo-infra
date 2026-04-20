@@ -89,10 +89,19 @@ def client_b_exec():
 
 @pytest.fixture(scope="session")
 def client_a_status(client_a_exec):
-    """Tailscale status JSON from client-a."""
+    """Tailscale status JSON from client-a, enriched with the DERP map.
+
+    `tailscale status --json` does not include DERPMap — that lives behind
+    `tailscale debug derp-map`. We merge it in under the `DERPMap` key so
+    tests can read `status["DERPMap"]["Regions"]` in one place.
+    """
     result = client_a_exec(["tailscale", "status", "--json"])
     assert result.returncode == 0, f"tailscale status failed: {result.stderr}"
-    return json.loads(result.stdout)
+    status = json.loads(result.stdout)
+    derp = client_a_exec(["tailscale", "debug", "derp-map"])
+    if derp.returncode == 0 and derp.stdout.strip():
+        status["DERPMap"] = json.loads(derp.stdout)
+    return status
 
 
 @pytest.fixture(scope="session")

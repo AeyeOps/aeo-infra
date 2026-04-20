@@ -83,9 +83,21 @@ if ip link show br-vm &>/dev/null; then
 fi
 docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
 
-# Phase 1: Start Headscale
-echo "=== Starting Headscale on br-vm ==="
-docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d headscale
+# Phase 0.5: Generate the per-run test CA and DERP leaf cert. Must happen
+# before `docker compose up derper` because the cert volume mount resolves
+# at compose-up time. See tests/integration/certs/generate.sh.
+echo "=== Generating test certs ==="
+"$SCRIPT_DIR/certs/generate.sh"
+if [[ ! -s "$SCRIPT_DIR/certs/ca.crt" || \
+      ! -s "$SCRIPT_DIR/certs/derp.meshtest.local.crt" || \
+      ! -s "$SCRIPT_DIR/certs/derp.meshtest.local.key" ]]; then
+    echo "FAIL: cert generation produced empty or missing outputs"
+    exit 1
+fi
+
+# Phase 1: Start Headscale + derper
+echo "=== Starting Headscale + derper on br-vm ==="
+docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d --build headscale derper
 echo "=== Waiting for Headscale health ==="
 for i in $(seq 1 30); do
     # headscale v0.27.1 emits no output on success; trust the exit code.
@@ -180,6 +192,39 @@ for name in "${WIN_NAMES[@]}"; do
     echo "    $name -> $ip"
 done
 
+# Phase 4.5: Push the test CA + hosts-file entry to each Windows VM so
+# that Phase 5's `tailscale up` can complete the DERP probe against our
+# self-signed derper.
+#
+# Design: scp two artifacts (the CA cert and a pre-generated PS1 script
+# from Phase 0.5), then invoke powershell -File on the script by path.
+# This avoids the CMD-vs-PowerShell-vs-ssh-wire quote-escape chain, which
+# is historically fragile (Windows CMD does not treat \" as an escape,
+# so any `"...\"...\""` sequence inside an ssh-delivered command can be
+# mangled by the intermediate shell). `powershell -File` reads the script
+# as a file and ignores shell quoting entirely.
+echo "=== Pushing test CA + hosts entry to Windows VMs ==="
+for name in "${WIN_NAMES[@]}"; do
+    ip="${WIN_IPS[$name]}"
+    echo "  $name ($ip): copying CA + install script..."
+    # Two scp calls so we can rename ca.crt -> meshtest-ca.crt on landing;
+    # install-ca-and-hosts.ps1 looks for $env:USERPROFILE\meshtest-ca.crt.
+    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+        "$SCRIPT_DIR/certs/ca.crt" \
+        "${WIN_USER}@${ip}:meshtest-ca.crt" \
+        || { echo "FAIL: scp CA to $name failed"; exit 1; }
+    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+        "$SCRIPT_DIR/certs/install-ca-and-hosts.ps1" \
+        "${WIN_USER}@${ip}:" \
+        || { echo "FAIL: scp install script to $name failed"; exit 1; }
+    echo "  $name ($ip): running install script..."
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+        "${WIN_USER}@${ip}" \
+        'powershell -NoProfile -ExecutionPolicy Bypass -File install-ca-and-hosts.ps1' \
+        || { echo "FAIL: install-ca-and-hosts.ps1 failed on $name"; exit 1; }
+    echo "    $name: CA trust and hosts entry installed OK"
+done
+
 # Phase 5: Join all nodes to mesh
 echo "=== Joining client-a ==="
 docker exec meshtest-client-a tailscale up \
@@ -202,18 +247,17 @@ for name in "${WIN_NAMES[@]}"; do
     # `tailscale up` returns "timeout waiting for Running state" when DERP is
     # unreachable even though the node is successfully registered. Treat a
     # non-zero exit as a warning; pytest validates real connectivity.
-    # --timeout=60s: Windows tailscaled waits for Running state, which
-    # includes a DERP probe pass. If DERP is unreachable or slow, that
-    # alone can eat 20-30 s before login completes. 30 s has proven
-    # tight enough to leave a Windows node stuck in NeedsLogin on a
-    # routine run. 60 s absorbs a slow DERP probe plus first handshake
-    # while staying bounded. Revisit this ceiling once the harness
-    # runs against reachable DERP — it can likely drop back toward 30 s
-    # as a tighter regression tripwire.
+    # --timeout=30s: With DERP reachable (derper container on br-vm,
+    # cert trusted via Phase 4.5 CA push), the probe completes quickly
+    # and the 60 s budget kind-purring-reef.md sized for an unreachable
+    # region is no longer needed. 30 s is a tight regression tripwire:
+    # if `tailscale up` ever exceeds it again, something in the DERP
+    # path has broken and we want to see it in a failing test, not
+    # swallowed by a loose timeout.
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
         -o ServerAliveInterval=10 -o ServerAliveCountMax=12 \
         "${WIN_USER}@${ip}" \
-        "\"C:\\Program Files\\Tailscale\\tailscale.exe\" up --login-server=${HEADSCALE_URL} --authkey=${AUTHKEY} --hostname=${name} --accept-routes --timeout=60s" \
+        "\"C:\\Program Files\\Tailscale\\tailscale.exe\" up --login-server=${HEADSCALE_URL} --authkey=${AUTHKEY} --hostname=${name} --accept-routes --timeout=30s" \
         || echo "  (tailscale up exited non-zero on $name; will verify via Headscale)"
 done
 
@@ -284,13 +328,16 @@ fi
 echo ""
 echo "=== Running integration tests ==="
 cd "$MESH_DIR"
+# `|| EXIT_CODE=$?` captures the pytest exit code without tripping `set -e`.
+# Without this, pytest failure aborts before `EXIT_CODE=$?` runs, making the
+# "Done (exit N)" echo only ever reachable with N=0 — useless when it matters.
+EXIT_CODE=0
 AUTHKEY="$AUTHKEY" \
 HEADSCALE_URL="$HEADSCALE_URL" \
 WIN_A_IP="${WIN_IPS[meshtest-win-a]}" \
 WIN_B_IP="${WIN_IPS[meshtest-win-b]}" \
 WIN_USER="$WIN_USER" \
-    uv run pytest tests/integration/ -v --tb=short "$@"
-EXIT_CODE=$?
+    uv run pytest tests/integration/ -v --tb=short "$@" || EXIT_CODE=$?
 
 echo "=== Done (exit $EXIT_CODE) ==="
 exit $EXIT_CODE

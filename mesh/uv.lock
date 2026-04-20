@@ -161,7 +161,7 @@ wheels = [
 
 [[package]]
 name = "mesh"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -182,20 +182,20 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.28" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pydantic-settings", specifier = ">=2.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "rich", specifier = ">=13.0" },
-    { name = "typer", specifier = ">=0.15" },
-    { name = "zeroconf", specifier = ">=0.131" },
+    { name = "httpx", specifier = ">=0.28,<1.0" },
+    { name = "pydantic", specifier = ">=2.0,<3.0" },
+    { name = "pydantic-settings", specifier = ">=2.0,<3.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0" },
+    { name = "rich", specifier = ">=13.0,<15.0" },
+    { name = "typer", specifier = ">=0.15,<1.0" },
+    { name = "zeroconf", specifier = ">=0.131,<1.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pyinstaller", specifier = ">=6.0" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "ruff", specifier = ">=0.8" },
+    { name = "pyinstaller", specifier = ">=6.0,<8.0" },
+    { name = "pytest", specifier = ">=8.0,<10.0" },
+    { name = "ruff", specifier = ">=0.8,<1.0" },
 ]
 
 [[package]]

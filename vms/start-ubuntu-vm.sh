@@ -171,7 +171,7 @@ if [[ -f "$PID_FILE" ]]; then
     if [[ "$1" == "install" && -f "$CLOUD_INIT_ISO" ]]; then
         echo "Automated install in progress. After completion:"
         echo "  SSH:       ssh ubu1  (192.168.50.10)"
-        echo "  User:      steve"
+        echo "  User:      ${VM_USER:-${SUDO_USER:-ubuntu}}"
         echo "  Password:  ubuntu (change recommended)"
     fi
     echo ""

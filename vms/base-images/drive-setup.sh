@@ -28,7 +28,7 @@ rm -f "$PIDF" "$LOG"
 # Step 1: fresh NVRAM
 sudo -n rm -f "$WORK/build.vars"
 sudo -n truncate -s 64M "$WORK/build.vars"
-sudo -n chown steve:steve "$WORK/build.vars"
+sudo -n chown "${SUDO_USER:-root}:${SUDO_USER:-root}" "$WORK/build.vars"
 
 # Blank first MB of build disk
 sudo -n dd if=/dev/zero of="$WORK/build.img" bs=1M count=1 conv=notrunc status=none 2>/dev/null || true

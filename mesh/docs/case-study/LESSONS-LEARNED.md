@@ -49,7 +49,7 @@ Key insights from implementing the three-node mesh network.
 
 **Example:**
 - `windows-host.local` → 192.168.1.100 (LAN, RDP blocked)
-- Tailscale IP → 100.64.0.4 (mesh, RDP allowed)
+- Tailscale IP → 100.64.0.12 (mesh, RDP allowed)
 
 **Best practice:** Use Tailscale IPs in SSH configs for consistency. Don't rely on mDNS for mesh connectivity.
 
@@ -70,7 +70,7 @@ New-NetFirewallRule -DisplayName "Service from Tailscale" `
 
 ## 7. SSH Config Aliases Prevent Errors
 
-**Lesson:** Using SSH config aliases (`ssh windows` vs `ssh 100.64.0.4 -p 22`) reduces errors and makes configs portable.
+**Lesson:** Using SSH config aliases (`ssh windows` vs `ssh 100.64.0.12 -p 22`) reduces errors and makes configs portable.
 
 **Best practice:** Define aliases in `~/.ssh/config` on every machine:
 ```

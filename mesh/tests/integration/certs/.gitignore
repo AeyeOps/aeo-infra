@@ -1,0 +1,6 @@
+ca.key
+ca.crt
+*.srl
+derp.meshtest.local.crt
+derp.meshtest.local.key
+install-ca-and-hosts.ps1

@@ -416,7 +416,6 @@ function Configure-Syncthing {
     # Try multiple possible config locations
     $configPaths = @(
         "$env:LOCALAPPDATA\Syncthing\config.xml",
-        "C:\Users\steve\AppData\Local\Syncthing\config.xml",  # Explicit user path
         "$env:ProgramFiles\Syncthing\config.xml"
     )
 

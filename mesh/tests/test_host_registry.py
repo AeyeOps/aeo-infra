@@ -30,7 +30,7 @@ class TestValidateHostname:
 
     def test_valid_hostnames(self):
         assert validate_hostname("ubu1") is True
-        assert validate_hostname("office-one") is True
+        assert validate_hostname("test-host") is True
         assert validate_hostname("server_01") is True
         assert validate_hostname("a") is True
         assert validate_hostname("A1-b2_c3") is True
@@ -49,12 +49,12 @@ class TestHostRegistry:
     """Tests for host registry CRUD operations."""
 
     def test_add_host_creates_entry(self, temp_config_dir):
-        host = add_host("ubu1", "192.168.50.10", 22, "steve")
+        host = add_host("ubu1", "192.168.50.10", 22, "testuser")
 
         assert host.name == "ubu1"
         assert host.ip == "192.168.50.10"
         assert host.port == 22
-        assert host.user == "steve"
+        assert host.user == "testuser"
 
         # Verify persisted
         loaded = get_host("ubu1")
@@ -62,14 +62,14 @@ class TestHostRegistry:
         assert loaded.ip == "192.168.50.10"
 
     def test_add_host_is_idempotent(self, temp_config_dir):
-        add_host("ubu1", "192.168.50.10", 22, "steve")
-        add_host("ubu1", "192.168.50.10", 22, "steve")  # Second call
+        add_host("ubu1", "192.168.50.10", 22, "testuser")
+        add_host("ubu1", "192.168.50.10", 22, "testuser")  # Second call
 
         hosts = load_hosts()
         assert len(hosts) == 1  # Still only one entry
 
     def test_add_host_updates_existing(self, temp_config_dir):
-        add_host("ubu1", "192.168.50.10", 22, "steve")
+        add_host("ubu1", "192.168.50.10", 22, "testuser")
         add_host("ubu1", "192.168.50.20", 2222, "admin")  # Update
 
         host = get_host("ubu1")
@@ -80,13 +80,13 @@ class TestHostRegistry:
 
     def test_add_host_invalid_hostname_raises(self, temp_config_dir):
         with pytest.raises(InvalidHostnameError):
-            add_host("invalid host", "192.168.50.10", 22, "steve")
+            add_host("invalid host", "192.168.50.10", 22, "testuser")
 
         with pytest.raises(InvalidHostnameError):
-            add_host("", "192.168.50.10", 22, "steve")
+            add_host("", "192.168.50.10", 22, "testuser")
 
     def test_remove_host(self, temp_config_dir):
-        add_host("ubu1", "192.168.50.10", 22, "steve")
+        add_host("ubu1", "192.168.50.10", 22, "testuser")
 
         result = remove_host("ubu1")
         assert result is True
@@ -120,7 +120,7 @@ class TestHostRegistry:
   valid_host:
     ip: 192.168.1.1
     port: 22
-    user: steve
+    user: testuser
   null_host: null
   invalid_host: "just a string"
 """

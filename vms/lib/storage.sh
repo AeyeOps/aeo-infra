@@ -4,6 +4,39 @@
 
 STORAGE_DIR="${STORAGE_DIR:-/storage}"
 ISO_URL="${ISO_URL:-https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.3-live-server-arm64.iso}"
+ISO_SHA256_URL="${ISO_SHA256_URL:-https://cdimage.ubuntu.com/releases/24.04/release/SHA256SUMS}"
+
+# Verify a downloaded ISO against the CDN-published SHA256SUMS. Same root
+# of trust as the ISO download (HTTPS to cdimage.ubuntu.com), but catches
+# corrupt files, partial downloads, and CDN-cache mismatches.
+# Usage: verify_iso_sha256 <iso_path> <iso_url> <sums_url>
+verify_iso_sha256() {
+    local iso_path="$1"
+    local iso_url="$2"
+    local sums_url="$3"
+    if ! command -v curl &>/dev/null; then
+        echo "    ✗ curl not found — install it to enable ISO SHA256 verification"
+        return 1
+    fi
+    local iso_name
+    iso_name=$(basename "$iso_url")
+    echo "    → Verifying ISO SHA256..."
+    local expected
+    expected=$(curl -fsSL "$sums_url" | awk -v f="*${iso_name}" '$2==f {print $1}')
+    if [[ -z "$expected" ]]; then
+        echo "    ✗ Could not find SHA for $iso_name in $sums_url"
+        return 1
+    fi
+    local actual
+    actual=$(sha256sum "$iso_path" | awk '{print $1}')
+    if [[ "$actual" != "$expected" ]]; then
+        echo "    ✗ SHA256 mismatch for $iso_path"
+        echo "      expected: $expected"
+        echo "      actual:   $actual"
+        return 1
+    fi
+    echo "    ✓ ISO SHA256 OK"
+}
 
 # Ensure storage directory exists
 ensure_storage_dir() {
@@ -57,7 +90,7 @@ ensure_uefi_rom() {
     fi
 }
 
-# Download Ubuntu ISO if needed
+# Download Ubuntu ISO if needed, then verify SHA256
 ensure_ubuntu_iso() {
     local iso_file
     iso_file=$(get_ubuntu_iso)
@@ -77,6 +110,7 @@ ensure_ubuntu_iso() {
             wget -c -O "$iso_file" "$ISO_URL"
         fi
     fi
+    verify_iso_sha256 "$iso_file" "$ISO_URL" "$ISO_SHA256_URL" || return 1
 }
 
 # Create cloud-init ISO for automated installation

@@ -106,7 +106,7 @@ Update SSH configs to use the correct port for WSL:
 
 ```
 Host wsl
-    HostName 100.64.0.4    # Windows Tailscale IP (WSL shares it)
+    HostName 100.64.0.12    # Windows Tailscale IP (WSL shares it)
     Port 2222
     User myuser
 ```

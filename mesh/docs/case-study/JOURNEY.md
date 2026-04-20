@@ -21,11 +21,11 @@ All nodes had stable 100.64.x.x addresses assigned.
 Created `~/.ssh/config`:
 ```
 Host windows
-    HostName 100.64.0.4
+    HostName 100.64.0.102
     User myuser
 
 Host wsl
-    HostName 100.64.0.4
+    HostName 100.64.0.102
     Port 2222
     User myuser
 ```
@@ -35,7 +35,7 @@ Host wsl
 Created `%USERPROFILE%\.ssh\config`:
 ```
 Host linux-host
-    HostName 100.64.0.1
+    HostName 100.64.0.10
     User myuser
 
 Host wsl
@@ -49,7 +49,7 @@ Host wsl
 Created `~/.ssh/config`:
 ```
 Host linux-host
-    HostName 100.64.0.1
+    HostName 100.64.0.10
     User myuser
 
 Host windows

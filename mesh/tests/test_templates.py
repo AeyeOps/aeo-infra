@@ -3,11 +3,14 @@
 import csv
 import io
 import json
+import re
+from pathlib import Path
 
 import pytest
 import yaml
 
 from mesh.core.templates import get_template, list_templates
+from tests._pii import FORBIDDEN, compiled_patterns
 
 
 class TestTemplateLoader:
@@ -154,27 +157,82 @@ class TestLogtailTemplates:
 
 
 class TestPIIScrub:
-    """Verify NO template contains environment-specific PII."""
+    """Verify NO template contains environment-specific PII.
 
-    FORBIDDEN = [
-        "aeyeops",
-        "sfspark",
-        "aurora",
-        "srv1540558",
-        "xps13",
-        "100.64.0.1",
-        "100.64.0.2",
-        "100.64.0.3",
-        "100.64.0.5",
-        "100.64.0.6",
-        "100.64.0.7",
-    ]
+    Substring match against the canonical FORBIDDEN list in `tests/_pii.py`.
+    Templates are small and tightly controlled, so substring is sufficient.
+    """
 
     def test_no_pii_in_any_template(self):
         """Every template file must be free of environment-specific values."""
         for name in list_templates():
             content = get_template(name).lower()
-            for pattern in self.FORBIDDEN:
+            for pattern in FORBIDDEN:
                 assert pattern.lower() not in content, (
                     f"PII pattern '{pattern}' found in template '{name}'"
                 )
+
+
+class TestRepoPIIScrub:
+    """Verify repo-level docs and scripts do not re-introduce PII.
+
+    Template-level TestPIIScrub was not enough — real usernames, hostnames,
+    and Tailscale IPs had leaked into docs/, setup-mesh.ps1, and vms/ scripts
+    despite the templates being clean. This test covers the surfaces that
+    are visible to users of the public repo.
+
+    Uses regex with word boundaries so `100.64.0.1` does NOT match the
+    placeholder IPs `100.64.0.10+` that legitimately appear in example docs.
+    """
+
+    PATTERNS: list[re.Pattern[str]] = compiled_patterns()
+
+    # Directories that are gitignored or discuss the PII list itself — not leaks.
+    SKIP_DIRS = frozenset({"archive", ".claude", ".venv", "__pycache__"})
+
+    def _repo_root(self) -> Path:
+        # tests/ → mesh/ → repo root
+        return Path(__file__).resolve().parent.parent.parent
+
+    def _assert_clean(self, path, content: str, context: str) -> None:
+        for pat in self.PATTERNS:
+            m = pat.search(content)
+            assert m is None, (
+                f"PII pattern /{pat.pattern}/ found in {context}: {path} "
+                f"(matched: {m.group()!r})"
+            )
+
+    def _skip(self, rel: Path) -> bool:
+        return any(part in self.SKIP_DIRS for part in rel.parts) or rel.name == "CLAUDE.md"
+
+    def test_no_pii_in_mesh_docs(self):
+        mesh_root = Path(__file__).resolve().parent.parent
+        for path in mesh_root.rglob("*.md"):
+            rel = path.relative_to(mesh_root)
+            if self._skip(rel):
+                continue
+            self._assert_clean(rel, path.read_text(errors="ignore"), "mesh doc")
+
+    def test_no_pii_in_mesh_powershell(self):
+        mesh_root = Path(__file__).resolve().parent.parent
+        for path in mesh_root.rglob("*.ps1"):
+            rel = path.relative_to(mesh_root)
+            if self._skip(rel):
+                continue
+            self._assert_clean(path.name, path.read_text(errors="ignore"), "PowerShell")
+
+    def test_no_pii_in_vms_scripts(self):
+        vms_root = self._repo_root() / "vms"
+        if not vms_root.exists():
+            return
+        for ext in ("*.sh", "*.md"):
+            for path in vms_root.rglob(ext):
+                self._assert_clean(
+                    path.relative_to(self._repo_root()),
+                    path.read_text(errors="ignore"),
+                    "vms script/doc",
+                )
+
+    def test_no_pii_in_mesh_readme(self):
+        readme = Path(__file__).resolve().parent.parent / "README.md"
+        self._assert_clean("mesh/README.md", readme.read_text(), "README")

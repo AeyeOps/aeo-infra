@@ -58,10 +58,10 @@ mesh status --verbose          # Detailed diagnostics
 mesh peer                      # Interactive device pairing
 
 # SMB/Samba file sharing
-mesh smb setup-server --share shared --user steve   # Configure Samba on Linux
-mesh smb add-user steve                             # Add/update SMB user password
-mesh smb setup-client --host windows --server sfspark1 --user steve  # Generate Windows drive-mapping script
-mesh smb status                                     # Check Samba services and shares
+mesh smb setup-server --share shared --user myuser   # Configure Samba on Linux
+mesh smb add-user myuser                             # Add/update SMB user password
+mesh smb setup-client --host windows --server myserver --user myuser  # Generate Windows drive-mapping script
+mesh smb status                                      # Check Samba services and shares
 ```
 
 ## Security Hardening
@@ -102,12 +102,37 @@ See `docs/security-hardening.md` for the full guide and `docs/architecture/` for
 
 ### Integration Tests
 
+There are two suites:
+
 ```bash
-# Run local tests (fast, no Docker)
+# Fast local tests (no Docker, no VMs)
 make test
 
-# Run integration tests (Docker Compose with real Headscale + Tailscale)
+# Full heterogeneous mesh — 2 Linux containers + 2 Windows VMs + real DERP
 make integration-test
+```
+
+The full suite spins up a sealed mesh on the `br-vm` bridge and runs pytest against it. End-to-end it takes ~5–10 min and should finish with `28 passed, 0 skipped`.
+
+**What it covers**
+
+- Headscale control plane + 2 Linux Tailscale clients (Docker)
+- 2 Windows Tailscale clients (QEMU VMs from the shared base image)
+- Reachable, TLS-backed private DERP (in-tree-built `derper` container with a per-run self-signed CA distributed to every client)
+- Cross-platform peer discovery, ping, and DERP-map validation
+
+**Prerequisites**
+
+- Docker with compose
+- QEMU/KVM and the Windows base image built via `sudo vms/winvm.sh image build` (see [`../vms/README.md`](../vms/README.md))
+- `sudo` without password prompt for `vms/winvm.sh` (the test orchestrator calls it to start/stop Windows VMs)
+
+That's all. `make integration-test` generates its own certs, starts everything, runs pytest, and tears the whole mesh down on exit.
+
+**If something fails**, the orchestrator exits non-zero and the most useful output is at the end of its log. Run directly for live output:
+
+```bash
+./tests/integration/run-tests.sh
 ```
 
 ## Architecture

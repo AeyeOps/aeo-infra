@@ -12,6 +12,7 @@ VM_NAME="ubuntu"
 DISK_SIZE="64G"
 
 ISO_URL="https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.3-live-server-arm64.iso"
+ISO_SHA256_URL="https://cdimage.ubuntu.com/releases/24.04/release/SHA256SUMS"
 ISO_FILE="${STORAGE_DIR}/ubuntu-24.04.3-server-arm64.iso"
 DISK_FILE="${STORAGE_DIR}/${VM_NAME}.img"
 VARS_FILE="${STORAGE_DIR}/${VM_NAME}.vars"
@@ -31,7 +32,7 @@ UPSTREAM_IF="enP7s7"
 
 # VM identity for autoinstall
 VM_HOSTNAME="ubu1"
-VM_USER="steve"
+VM_USER="${VM_USER:-${SUDO_USER:-ubuntu}}"
 # Get SSH key from the user running sudo (not root)
 SSH_KEY_FILE="/home/${SUDO_USER:-$VM_USER}/.ssh/id_ed25519.pub"
 if [[ ! -f "$SSH_KEY_FILE" ]]; then
@@ -56,8 +57,8 @@ else
     echo "  $STORAGE_DIR exists"
 fi
 
-# Step 1: Check/install QEMU and UEFI firmware
-echo "[1/8] Checking QEMU and UEFI firmware..."
+# Step 1: Check/install QEMU and UEFI firmware (and curl for ISO SHA verify)
+echo "[1/8] Checking QEMU, UEFI firmware, and curl..."
 NEED_INSTALL=""
 if ! command -v qemu-system-aarch64 &>/dev/null; then
     echo "  qemu-system-arm not installed"
@@ -66,6 +67,10 @@ fi
 if ! [[ -f "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd" ]]; then
     echo "  qemu-efi-aarch64 not installed"
     NEED_INSTALL="$NEED_INSTALL qemu-efi-aarch64"
+fi
+if ! command -v curl &>/dev/null; then
+    echo "  curl not installed (needed for ISO SHA256 verification)"
+    NEED_INSTALL="$NEED_INSTALL curl"
 fi
 if [[ -n "$NEED_INSTALL" ]]; then
     echo "  Installing:$NEED_INSTALL"
@@ -93,7 +98,7 @@ fi
 # Export for start script
 echo "$UEFI_ROM" > "${STORAGE_DIR}/.ubuntu-uefi-rom-path"
 
-# Step 2: Download ISO
+# Step 2: Download ISO and verify SHA256
 echo "[2/8] Checking Ubuntu ISO..."
 if [[ -f "$ISO_FILE" ]]; then
     # Check if file looks complete (>2GB for server ISO)
@@ -108,6 +113,26 @@ else
     echo "  Downloading Ubuntu 24.04 Server ARM64..."
     wget -c -O "$ISO_FILE" "$ISO_URL"
 fi
+
+# Verify SHA256 against the CDN-published SHA256SUMS. The sums file lives
+# alongside the ISO and is fetched over the same HTTPS channel — not a
+# separate root of trust, but it detects corrupt downloads and CDN-cache
+# mismatches, and guarantees the ISO matches the release that was built.
+echo "  Verifying ISO SHA256..."
+ISO_BASENAME=$(basename "$ISO_URL")
+EXPECTED_SHA=$(curl -fsSL "$ISO_SHA256_URL" | awk -v f="*${ISO_BASENAME}" '$2==f {print $1}')
+if [[ -z "$EXPECTED_SHA" ]]; then
+    echo "  FAIL: could not find SHA for $ISO_BASENAME in $ISO_SHA256_URL"
+    exit 1
+fi
+ACTUAL_SHA=$(sha256sum "$ISO_FILE" | awk '{print $1}')
+if [[ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]]; then
+    echo "  FAIL: SHA256 mismatch for $ISO_FILE"
+    echo "    expected: $EXPECTED_SHA"
+    echo "    actual:   $ACTUAL_SHA"
+    exit 1
+fi
+echo "  ISO SHA256 OK"
 
 # Step 3: Create disk image
 echo "[3/8] Checking disk image..."

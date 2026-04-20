@@ -39,15 +39,15 @@ running only on the Windows host, not inside WSL2.
 WSL2 piggybacks on the Windows host's Tailscale connection:
 
 ```
-Remote mesh node (e.g., sfspark1 @ 100.64.0.1)
+Remote mesh node (e.g., myserver @ 100.64.0.10)
     |
     | WireGuard tunnel
     v
-Windows host Tailscale (100.64.0.3)
+Windows host Tailscale (100.64.0.11)
     |
     | Mirrored network stack (shared IPs)
     v
-WSL2 instance (sees 100.64.0.3 as its own)
+WSL2 instance (sees 100.64.0.11 as its own)
 ```
 
 **Outbound from WSL2:** Traffic to Tailscale IPs (100.64.x.x) leaves through
@@ -75,7 +75,7 @@ networkingMode=mirrored
 
 ## Setup: NFS Shared Directory
 
-The mesh uses NFSv4 to share `/opt/shared` from the NFS server node (sfspark1).
+The mesh uses NFSv4 to share `/opt/shared` from the NFS server node (myserver).
 WSL2 mounts it as an NFS client through the host's Tailscale routing.
 
 ### 1. Install NFS Client
@@ -93,7 +93,7 @@ sudo mkdir -p /opt/shared
 ### 3. Test Mount
 
 ```bash
-sudo mount -t nfs4 100.64.0.1:/opt/shared /opt/shared -o soft,timeo=150
+sudo mount -t nfs4 100.64.0.10:/opt/shared /opt/shared -o soft,timeo=150
 ```
 
 Verify:
@@ -108,7 +108,7 @@ touch /opt/shared/.write_test && rm /opt/shared/.write_test && echo "read/write 
 Add to `/etc/fstab`:
 
 ```
-100.64.0.1:/opt/shared  /opt/shared  nfs4  _netdev,x-systemd.automount,x-systemd.idle-timeout=600,soft,timeo=150  0  0
+100.64.0.10:/opt/shared  /opt/shared  nfs4  _netdev,x-systemd.automount,x-systemd.idle-timeout=600,soft,timeo=150  0  0
 ```
 
 Then:
@@ -128,7 +128,7 @@ Options explained:
 | `soft` | Return errors instead of hanging if server unreachable |
 | `timeo=150` | 15-second timeout for operations |
 
-## NFS Server Setup (sfspark1)
+## NFS Server Setup (myserver)
 
 For reference, the server side configuration:
 
@@ -153,7 +153,7 @@ traffic in transit.
 tailscale status              # Run from PowerShell on Windows host
 
 # From WSL2, verify routing to mesh
-ping -c 1 100.64.0.1          # Should reach sfspark1
+ping -c 1 100.64.0.10          # Should reach myserver
 
 # Confirm NFS mount
 mount | grep nfs4
@@ -172,13 +172,13 @@ ls /opt/shared
 
 2. Test TCP connectivity from WSL2:
    ```bash
-   nc -zv 100.64.0.1 2049
+   nc -zv 100.64.0.10 2049
    ```
 
 3. If port 2049 is unreachable, check that the NFS server is running on
-   sfspark1:
+   myserver:
    ```bash
-   ssh sfspark1 'systemctl status nfs-server'
+   ssh myserver 'systemctl status nfs-server'
    ```
 
 ### Permission denied on mount
@@ -186,7 +186,7 @@ ls /opt/shared
 Verify the export allows the Tailscale subnet:
 
 ```bash
-ssh sfspark1 'sudo exportfs -v'
+ssh myserver 'sudo exportfs -v'
 ```
 
 The `clientaddr` in the mount output should be a 100.64.x.x address.
@@ -220,9 +220,9 @@ outbound TCP from WSL2 traverses the host's network stack either way.
 ```
 Node                    Tailscale IP    OS        Role
 ----                    ------------    --        ----
-sfspark1                100.64.0.1      Linux     NFS server, shared storage
-office-one (WSL2)       100.64.0.3      Linux     NFS client (via host Tailscale)
-office-one (Windows)    100.64.0.4      Windows   Tailscale endpoint
+myserver                100.64.0.10      Linux     NFS server, shared storage
+mywsl (WSL2)       100.64.0.11      Linux     NFS client (via host Tailscale)
+mywindows (Windows)    100.64.0.12      Windows   Tailscale endpoint
 ```
 
 WSL2 does not have its own Tailscale identity. It shares the Windows host's

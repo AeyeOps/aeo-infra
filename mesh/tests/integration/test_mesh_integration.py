@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests._pii import FORBIDDEN
+
 
 class TestHeadscaleHealth:
     """Verify Headscale control plane is operational."""
@@ -135,43 +137,34 @@ class TestDNSPolicy:
 
 
 class TestTemplatePIIScrub:
-    """Verify test config files contain no environment-specific PII."""
+    """Verify integration test config YAMLs contain no environment-specific PII.
 
-    FORBIDDEN = [
-        "aeyeops",
-        "sfspark",
-        "aurora",
-        "srv1540558",
-        "xps13",
-        "100.64.0.1 ",  # trailing space to not match the subnet prefix
-        "100.64.0.2",
-        "100.64.0.3",
-        "100.64.0.5",
-        "100.64.0.6",
-        "100.64.0.7",
-    ]
+    Uses the canonical `tests/_pii.FORBIDDEN` list. Substring match is fine
+    here because the YAMLs don't contain placeholder IPs that overlap with
+    `100.64.0.1..7` (the user's real addresses).
+    """
 
     def test_headscale_config_no_pii(self):
         config_path = Path(__file__).parent / "headscale" / "config.yaml"
         content = config_path.read_text().lower()
-        for pattern in self.FORBIDDEN:
-            assert pattern.lower().strip() not in content, (
+        for pattern in FORBIDDEN:
+            assert pattern.lower() not in content, (
                 f"PII pattern '{pattern}' found in headscale config"
             )
 
     def test_derp_map_no_pii(self):
         derp_path = Path(__file__).parent / "headscale" / "derp.yaml"
         content = derp_path.read_text().lower()
-        for pattern in self.FORBIDDEN:
-            assert pattern.lower().strip() not in content, (
+        for pattern in FORBIDDEN:
+            assert pattern.lower() not in content, (
                 f"PII pattern '{pattern}' found in DERP map"
             )
 
     def test_acl_no_pii(self):
         acl_path = Path(__file__).parent / "headscale" / "acl.yaml"
         content = acl_path.read_text().lower()
-        for pattern in self.FORBIDDEN:
-            assert pattern.lower().strip() not in content, (
+        for pattern in FORBIDDEN:
+            assert pattern.lower() not in content, (
                 f"PII pattern '{pattern}' found in ACL policy"
             )
 

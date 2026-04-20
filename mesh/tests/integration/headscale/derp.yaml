@@ -1,13 +1,13 @@
 regions:
   900:
     regionid: 900
-    regioncode: "test"
-    regionname: "Test Private DERP"
+    regioncode: "meshtest"
+    regionname: "Mesh Test Embedded DERP"
     nodes:
-      - name: "test-derp-1"
+      - name: "meshtest-derp-1"
         regionid: 900
-        hostname: "derp.example.com"
-        ipv4: "203.0.113.1"
+        hostname: "derp.meshtest.local"
+        ipv4: "192.168.50.13"
         stunport: 3478
         stunonly: false
         derpport: 443

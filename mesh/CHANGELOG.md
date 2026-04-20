@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] - 2026-04-20
+
+### Added
+- Embedded DERP in the integration test harness — standalone `derper` container (built in-tree from Tailscale source) on the `meshtest` bridge at `192.168.50.13`, serving DERP-over-TLS on `:443` and STUN on `:3478/udp`.
+- Per-run test CA + leaf cert for `derp.meshtest.local`, distributed to Linux clients via an entrypoint wrapper and to Windows VMs via `scp` + `certutil` + hosts-file entry.
+- Two previously-skipped DERPMap tests now run and pass (`TestDERPMapValidation::test_no_public_derp_regions`, `test_private_derp_present`). Integration suite now reports `28 passed, 0 skipped`.
+- Repo-wide PII scrub test (`TestRepoPIIScrub` in `mesh/tests/test_templates.py`) — regex-with-word-boundary scan of `mesh/` docs, PowerShell scripts, README, and `vms/` scripts. Prevents real usernames/hostnames/IPs from leaking into tracked files.
+- Shared canonical PII marker list at `mesh/tests/_pii.py` — single source of truth replacing three duplicated FORBIDDEN lists across `test_templates.py` and `test_mesh_integration.py`.
+
+### Changed
+- Windows `tailscale up --timeout` lowered from 60s back to 30s — with DERP reachable, the probe no longer absorbs the old 20–30 s budget, so 30 s is a tighter regression tripwire.
+- `conftest.py` `client_a_status` fixture enriches `tailscale status --json` with `DERPMap` sourced from `tailscale debug derp-map` (the `--json` output does not include it).
+- Pinned upper bounds on all runtime and dev dependencies in `mesh/pyproject.toml` (e.g., `pydantic>=2.0,<3.0`, `pytest>=8.0,<10.0`). `uv.lock` unchanged at resolution time.
+
+### Security
+- Scrubbed real usernames, hostnames, and Tailscale IPs from tracked docs (`mesh/docs/setup-*.md`, `mesh/docs/case-study/*.md`), `mesh/README.md`, `mesh/setup-mesh.ps1`, `mesh/tests/test_host_registry.py`, and `vms/` scripts — replaced with generic placeholders. Canonical forbidden-marker list lives in `mesh/tests/_pii.py`.
+- Windows user path in `setup-mesh.ps1` replaced with `$env:LOCALAPPDATA` (redundant hardcoded fallback removed).
+- `VM_USER` in `vms/setup-ubuntu-vm.sh` now defaults to `${SUDO_USER:-ubuntu}` rather than a hardcoded value.
+- `chown` in `vms/base-images/drive-setup*.sh` parameterized to `${SUDO_USER:-root}`.
+- Ubuntu ISO downloads in `vms/setup-ubuntu-vm.sh` and `vms/lib/storage.sh` now verify SHA256 against the CDN-published `SHA256SUMS` file before the ISO is used. Fail-fast on mismatch, missing entry, or missing `curl`.
+
 ## [0.6.0] - 2026-04-14
 
 ### Added

@@ -23,7 +23,7 @@ services:
     image: tailscale/tailscale:latest
     container_name: meshtest-client-a
     hostname: client-a
-    entrypoint: []
+    entrypoint: /local-entrypoint.sh
     command:
       - tailscaled
       - --state=/var/lib/tailscale/tailscaled.state
@@ -35,18 +35,24 @@ services:
       - SYS_MODULE
     volumes:
       - client-a-state:/var/lib/tailscale
+      - ./certs:/certs:ro
+      - ./certs/client-entrypoint.sh:/local-entrypoint.sh:ro
+    extra_hosts:
+      - "derp.meshtest.local:192.168.50.13"
     networks:
       meshtest:
         ipv4_address: 192.168.50.11
     depends_on:
       headscale:
         condition: service_healthy
+      derper:
+        condition: service_healthy
 
   client-b:
     image: tailscale/tailscale:latest
     container_name: meshtest-client-b
     hostname: client-b
-    entrypoint: []
+    entrypoint: /local-entrypoint.sh
     command:
       - tailscaled
       - --state=/var/lib/tailscale/tailscaled.state
@@ -58,12 +64,47 @@ services:
       - SYS_MODULE
     volumes:
       - client-b-state:/var/lib/tailscale
+      - ./certs:/certs:ro
+      - ./certs/client-entrypoint.sh:/local-entrypoint.sh:ro
+    extra_hosts:
+      - "derp.meshtest.local:192.168.50.13"
     networks:
       meshtest:
         ipv4_address: 192.168.50.12
     depends_on:
       headscale:
         condition: service_healthy
+      derper:
+        condition: service_healthy
+
+  derper:
+    build:
+      context: ./derper
+    container_name: meshtest-derper
+    hostname: derp.meshtest.local
+    restart: "no"
+    command:
+      - -hostname
+      - derp.meshtest.local
+      - -a
+      - ":443"
+      - -certmode
+      - manual
+      - -certdir
+      - /certs
+    volumes:
+      - ./certs:/certs:ro
+    networks:
+      meshtest:
+        ipv4_address: 192.168.50.13
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -qO- --no-check-certificate https://derp.meshtest.local/derp/probe >/dev/null 2>&1 || exit 1"
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
 
 # The meshtest network attaches to the existing Linux bridge owned by
 # winvm.sh (br-vm). QEMU Windows VMs attach taps to the same bridge and
