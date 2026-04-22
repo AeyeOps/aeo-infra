@@ -4,7 +4,7 @@
 
 ## What This Repo Is
 
-This repo gives you two practical building blocks:
+This repo contains:
 
 | Directory | What it does | Who it is for |
 |-----------|--------------|----------------|
@@ -14,6 +14,8 @@ This repo gives you two practical building blocks:
 The most important user-facing artifact in this repo is the Windows base image built by `vms/winvm.sh`. That image is not limited to Mesh. It is a general-purpose Windows 11 ARM64 QEMU image that already has SSH and Tailscale installed, so it can be used anywhere that workflow is useful.
 
 > **Note:** The vLLM deployment project has moved to its own repo: [steveant/aeo-vllm-gb10](https://github.com/steveant/aeo-vllm-gb10)
+>
+> **Note:** NPU work has moved to its own repo: [AeyeOps/aeo-npui](https://github.com/AeyeOps/aeo-npui)
 
 ## Why It Is Valuable
 

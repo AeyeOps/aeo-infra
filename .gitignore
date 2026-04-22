@@ -44,10 +44,25 @@ mesh/.claude/
 # vLLM moved to dedicated repo steveant/aeo-vllm-gb10 (see commit 565e878)
 vLLM/
 
+# Playwright / ad-hoc local automation output
+output/
+
 # Environment (keep .env.example, exclude actual .env)
 .env
 .env.local
 .env.*.local
+
+# Credentials and key material (defensive — never commit these)
+*.key
+*.pem
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+credentials*.json
+secrets*.json
+service-account*.json
 
 # Lock files (keep uv.lock, exclude others)
 !uv.lock
