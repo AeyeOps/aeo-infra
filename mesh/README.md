@@ -29,7 +29,7 @@ mesh --version
 The CLI reads configuration from environment variables. See `../.env.example` for available options:
 
 - `MESH_DEFAULT_USER` - Default SSH username for host connections
-- `MESH_SHARED_FOLDER_LINUX` - Linux shared folder path (default: `/opt/shared`)
+- `MESH_SHARED_FOLDER_LINUX` - Linux shared folder path (no default; must be set)
 - `MESH_SHARED_FOLDER_WINDOWS` - Windows shared folder path (default: `C:\shared`)
 
 ## Usage
@@ -147,7 +147,7 @@ Tailscale Mesh VPN
     All nodes use --login-server http://<server>:8080
 
 Syncthing Cluster (peer-to-peer)
-    Server:/opt/shared <-> WSL2:/opt/shared <-> Windows:C:\shared
+    Server:$MESH_SHARED_FOLDER_LINUX <-> WSL2:$MESH_SHARED_FOLDER_LINUX <-> Windows:$MESH_SHARED_FOLDER_WINDOWS
     Ports: 8384-8386 (GUI), 22000-22002 (sync)
 ```
 

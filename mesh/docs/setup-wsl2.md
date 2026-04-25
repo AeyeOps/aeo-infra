@@ -75,7 +75,7 @@ networkingMode=mirrored
 
 ## Setup: NFS Shared Directory
 
-The mesh uses NFSv4 to share `/opt/shared` from the NFS server node (myserver).
+The mesh uses NFSv4 to share `$MESH_SHARED_FOLDER_LINUX` from the NFS server node (myserver).
 WSL2 mounts it as an NFS client through the host's Tailscale routing.
 
 ### 1. Install NFS Client
@@ -87,20 +87,20 @@ sudo apt install nfs-common
 ### 2. Create Mount Point
 
 ```bash
-sudo mkdir -p /opt/shared
+sudo mkdir -p $MESH_SHARED_FOLDER_LINUX
 ```
 
 ### 3. Test Mount
 
 ```bash
-sudo mount -t nfs4 100.64.0.10:/opt/shared /opt/shared -o soft,timeo=150
+sudo mount -t nfs4 100.64.0.10:$MESH_SHARED_FOLDER_LINUX $MESH_SHARED_FOLDER_LINUX -o soft,timeo=150
 ```
 
 Verify:
 
 ```bash
-ls /opt/shared
-touch /opt/shared/.write_test && rm /opt/shared/.write_test && echo "read/write OK"
+ls $MESH_SHARED_FOLDER_LINUX
+touch $MESH_SHARED_FOLDER_LINUX/.write_test && rm $MESH_SHARED_FOLDER_LINUX/.write_test && echo "read/write OK"
 ```
 
 ### 4. Persistent Mount (fstab)
@@ -108,14 +108,14 @@ touch /opt/shared/.write_test && rm /opt/shared/.write_test && echo "read/write 
 Add to `/etc/fstab`:
 
 ```
-100.64.0.10:/opt/shared  /opt/shared  nfs4  _netdev,x-systemd.automount,x-systemd.idle-timeout=600,soft,timeo=150  0  0
+100.64.0.10:$MESH_SHARED_FOLDER_LINUX  $MESH_SHARED_FOLDER_LINUX  nfs4  _netdev,x-systemd.automount,x-systemd.idle-timeout=600,soft,timeo=150  0  0
 ```
 
 Then:
 
 ```bash
 sudo systemctl daemon-reload
-sudo mount /opt/shared
+sudo mount $MESH_SHARED_FOLDER_LINUX
 ```
 
 Options explained:
@@ -136,7 +136,7 @@ For reference, the server side configuration:
 sudo apt install nfs-kernel-server
 
 # /etc/exports
-/opt/shared  100.64.0.0/10(rw,sync,no_subtree_check,no_root_squash)
+$MESH_SHARED_FOLDER_LINUX  100.64.0.0/10(rw,sync,no_subtree_check,no_root_squash)
 
 sudo exportfs -ra
 sudo systemctl enable --now nfs-server
@@ -157,7 +157,7 @@ ping -c 1 100.64.0.10          # Should reach myserver
 
 # Confirm NFS mount
 mount | grep nfs4
-ls /opt/shared
+ls $MESH_SHARED_FOLDER_LINUX
 ```
 
 ## Troubleshooting
@@ -197,8 +197,8 @@ WSL2 restarts lose the mount. If using fstab with `x-systemd.automount`, the
 next access will remount automatically. Otherwise:
 
 ```bash
-sudo umount -l /opt/shared
-sudo mount /opt/shared
+sudo umount -l $MESH_SHARED_FOLDER_LINUX
+sudo mount $MESH_SHARED_FOLDER_LINUX
 ```
 
 ### Mirrored mode not working

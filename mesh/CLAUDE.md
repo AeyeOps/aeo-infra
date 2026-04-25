@@ -72,7 +72,7 @@ make integration-test    # Full heterogeneous mesh (Docker + QEMU Windows VM)
 
 Set these environment variables (or in `../.env`):
 - `MESH_DEFAULT_USER` - Default SSH username
-- `MESH_SHARED_FOLDER_LINUX` - Linux shared folder (default: `/opt/shared`)
+- `MESH_SHARED_FOLDER_LINUX` - Linux shared folder (no default; must be set)
 - `MESH_SHARED_FOLDER_WINDOWS` - Windows shared folder (default: `C:\shared`)
 
 ## Network Configuration

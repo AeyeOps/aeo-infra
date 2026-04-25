@@ -81,7 +81,7 @@ uv run mesh status --verbose
 | Windows | 22 | 8386 | 22002 | - |
 
 ### Shared Folder Paths
-- Linux: `$MESH_SHARED_FOLDER_LINUX` (default: `/opt/shared`)
+- Linux: `$MESH_SHARED_FOLDER_LINUX` (no default; must be set)
 - Windows: `$MESH_SHARED_FOLDER_WINDOWS` (default: `C:\shared`)
 
 ### Troubleshooting

@@ -71,7 +71,10 @@ def get_shared_folder() -> Path:
     os_type = detect_os_type()
     if os_type == OSType.WINDOWS:
         return Path(os.environ.get("MESH_SHARED_FOLDER_WINDOWS", "C:/shared"))
-    return Path(os.environ.get("MESH_SHARED_FOLDER_LINUX", "/opt/shared"))
+    value = os.environ.get("MESH_SHARED_FOLDER_LINUX")
+    if not value:
+        raise RuntimeError("MESH_SHARED_FOLDER_LINUX is not set")
+    return Path(value)
 
 
 # --- Host Registry ---

@@ -35,7 +35,7 @@ You should see the other mesh nodes (myserver, mywsl, mywindows, etc.) and have 
 
 ## Shared Directory Setup
 
-The mesh shared directory lives on myserver at `/opt/shared`. Windows nodes
+The mesh shared directory lives on myserver at `$MESH_SHARED_FOLDER_LINUX`. Windows nodes
 access it via rclone mounting over SFTP through the Tailscale tunnel.
 
 ### Why rclone SFTP (Not NFS or SMB)
@@ -72,7 +72,7 @@ rclone config create myserver sftp host=100.64.0.10 user=myuser key_file=C:\User
 Verify connectivity:
 
 ```powershell
-rclone ls myserver:/opt/shared/
+rclone ls myserver:$MESH_SHARED_FOLDER_LINUX/
 ```
 
 ### Mount to C:\dev\shared
@@ -88,7 +88,7 @@ mkdir C:\dev
 Move-Item -Path C:\dev\shared -Destination C:\dev\shared-backup
 
 # Mount
-rclone mount myserver:/opt/shared C:\dev\shared --vfs-cache-mode full --dir-cache-time 5s --poll-interval 10s --vfs-cache-poll-interval 5s --volname mesh-shared
+rclone mount myserver:$MESH_SHARED_FOLDER_LINUX C:\dev\shared --vfs-cache-mode full --dir-cache-time 5s --poll-interval 10s --vfs-cache-poll-interval 5s --volname mesh-shared
 ```
 
 Mount options:
@@ -121,7 +121,7 @@ persist it, create a Windows Task Scheduler entry:
 ```powershell
 $action = New-ScheduledTaskAction `
     -Execute "rclone.exe" `
-    -Argument "mount myserver:/opt/shared C:\dev\shared --vfs-cache-mode full --dir-cache-time 5s --poll-interval 10s --vfs-cache-poll-interval 5s --volname mesh-shared"
+    -Argument "mount myserver:$MESH_SHARED_FOLDER_LINUX C:\dev\shared --vfs-cache-mode full --dir-cache-time 5s --poll-interval 10s --vfs-cache-poll-interval 5s --volname mesh-shared"
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 
@@ -153,7 +153,7 @@ Unregister-ScheduledTask -TaskName "Mesh Shared Mount" -Confirm:$false
 
 ```powershell
 # Start (runs in foreground -- use a dedicated terminal or Task Scheduler)
-rclone mount myserver:/opt/shared C:\dev\shared --vfs-cache-mode full --dir-cache-time 5s --poll-interval 10s --vfs-cache-poll-interval 5s --volname mesh-shared
+rclone mount myserver:$MESH_SHARED_FOLDER_LINUX C:\dev\shared --vfs-cache-mode full --dir-cache-time 5s --poll-interval 10s --vfs-cache-poll-interval 5s --volname mesh-shared
 
 # Stop (from another terminal)
 Get-Process rclone | Stop-Process -Force
